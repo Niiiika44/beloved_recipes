@@ -1,0 +1,10 @@
+.env
+*__pycache__
+.vscode
+.venv/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+node_modules/
+data/
+.DS_Store
