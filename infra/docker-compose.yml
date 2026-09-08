@@ -4,11 +4,11 @@ services:
     image: postgres:17@sha256:67f41722b7a8cbdb868a44a4995c846eddfdc2973bccb291ce937dce88ad5675
     restart: unless-stopped
     environment:
-      POSTGRES_USER: ${DB_USER:?err}
-      POSTGRES_PASSWORD: ${DB_PASSWORD:?err}
-      POSTGRES_DB: ${DB_NAME:?err}
+      POSTGRES_USER: ${DB__USER:?err}
+      POSTGRES_PASSWORD: ${DB__PASSWORD:?err}
+      POSTGRES_DB: ${DB__NAME:?err}
     ports:
-      - "127.0.0.1:${DB_PORT:?err}:5432"
+      - "127.0.0.1:${DB__PORT:?err}:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
@@ -23,9 +23,9 @@ services:
     image: redis:7-alpine@sha256:ff02b58f971e7d7d156a1267e283fcbbeee91773b6aa36c49dac28ecfe28eadf
     restart: unless-stopped
     environment:
-      REDIS_PASSWORD: ${REDIS_PASSWORD:?err}
+      REDIS_PASSWORD: ${REDIS__PASSWORD:?err}
     ports:
-      - "127.0.0.1:${REDIS_PORT:?err}:6379"
+      - "127.0.0.1:${REDIS__PORT:?err}:6379"
     volumes:
       - redis_data:/data
     command: ["sh", "-c", "exec redis-server --appendonly yes --requirepass \"$${REDIS_PASSWORD}\""]
