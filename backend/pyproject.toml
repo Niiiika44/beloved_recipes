@@ -1,0 +1,76 @@
+[project]
+name = "beloved-recipes"
+version = "0.1.0"
+description = "A service designed to organize your shared meals"
+readme = "README.md"
+authors = [
+    { name = "Вероника Бурдельная", email = "103104860+Niiiika44@users.noreply.github.com" }
+]
+requires-python = ">=3.14"
+dependencies = [
+    "alembic>=1.19.1",
+    "asyncpg>=0.31.0",
+    "fastapi>=0.141.1",
+    "pydantic-settings>=2.15.0",
+    "redis>=8.1.0",
+    "sqlalchemy[asyncio]>=2.0.52",
+    "structlog>=26.1.0",
+    "uvicorn[standard]>=0.52.4",
+]
+
+[dependency-groups]
+dev = [
+    "httpx>=0.28.1",
+    "mypy>=2.3.1",
+    "pytest>=9.1.1",
+    "pytest-asyncio>=1.4.0",
+    "ruff>=0.16.5",
+    "testcontainers[postgres]>=4.15.0",
+]
+
+[tool.uv]
+package = false
+
+[tool.ruff]
+line-length = 100
+
+[tool.ruff.lint]
+select = [
+    "E",     # Ошибки стиля кода (pycodestyle errors)
+    "W",     # Предупреждения стиля кода (pycodestyle warnings)
+    "F",     # Логические ошибки (pyflakes)
+    "I",     # Правильный порядок импортов (isort)
+    "N",     # Именование по PEP 8
+    "B",     # Поиск распространенных багов (flake8-bugbear)
+    "A",     # Запрет на создание переменных, совпадающих со встроенными именами (flake8-builtins)
+    "UP",    # Предложения по обновлению синтаксиса на более новый (pyupgrade)
+    "C4",    # Неэффективные comprehension'ы
+    "DTZ",   # Запрет наивных datetime
+    "T20",   # Забытые print
+    "ASYNC", # Ловушки asyncio: блокирующие вызовы в корутинах
+    "S",     # Базовая безопасность (bandit): хардкод секретов, небезопасный random
+    "G",     # Правильное форматирование логов
+    "PT",    # Стиль pytest
+    "SIM",   # Упрощения
+    "RUF",   # Правила самого ruff
+]
+
+[tool.ruff.lint.isort]
+known-first-party = ["app"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["S101"]
+
+[tool.mypy]
+strict = true
+python_version = "3.14"
+warn_unreachable = true
+plugins = ["pydantic.mypy"]
+exclude = ["alembic/versions/"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+pythonpath = ["."]
+addopts = "--strict-markers --strict-config -ra"
+filterwarnings = ["error"]
