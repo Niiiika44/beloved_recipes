@@ -18,6 +18,7 @@ class _Section(BaseModel):
 class AppSection(_Section):
     env: Literal["local", "ci", "prod"] = "local"
     name: str = "beloved-recipes"
+    log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR"] = "INFO"
 
     @property
     def is_prod(self) -> bool:
