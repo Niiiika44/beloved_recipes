@@ -1,25 +1,27 @@
-import os
 import re
 import uuid
-from collections.abc import AsyncIterator, Iterator
+from collections.abc import AsyncIterator
 from datetime import UTC, datetime
 
 import pytest
-from sqlalchemy import inspect, select, text
+from sqlalchemy import MetaData, inspect, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 from sqlalchemy.pool import QueuePool
-from testcontainers.community.postgres import PostgresContainer
 
 from app.core.config import get_settings
 from app.core.db import dispose_engine, get_engine, get_session, get_session_factory
-from app.core.models import Base, IdMixin, TimestampMixin
+from app.core.models import NAMING_CONVENTION, IdMixin, TimestampMixin
 
 DURATION = re.compile(r"^(\d+)(ms|s|min)$")
 UNITS = {"ms": 1, "s": 1000, "min": 60_000}
 
 
-class Widget(IdMixin, TimestampMixin, Base):
+class SandboxBase(DeclarativeBase):
+    metadata = MetaData(naming_convention=NAMING_CONVENTION)
+
+
+class Widget(IdMixin, TimestampMixin, SandboxBase):
     __tablename__ = "t_widgets"
 
     title: Mapped[str] = mapped_column(unique=True)
@@ -42,37 +44,8 @@ def _to_ms(value: str) -> int:
     return int(match.group(1)) * UNITS[match.group(2)]
 
 
-@pytest.fixture(scope="session")
-def postgres() -> Iterator[PostgresContainer]:
-    with PostgresContainer("postgres:17-alpine") as container:
-        yield container
-
-
-@pytest.fixture(scope="session", autouse=True)
-def _point_at_container(postgres: PostgresContainer) -> Iterator[None]:
-    overrides = {
-        "DB__HOST": postgres.get_container_host_ip(),
-        "DB__PORT": str(postgres.get_exposed_port(5432)),
-        "DB__USER": postgres.username,
-        "DB__PASSWORD": postgres.password,
-        "DB__NAME": postgres.dbname,
-    }
-    saved = {key: os.environ.get(key) for key in overrides}
-    os.environ.update(overrides)
-    get_settings.cache_clear()
-
-    yield
-
-    for key, value in saved.items():
-        if value is None:
-            os.environ.pop(key, None)
-        else:
-            os.environ[key] = value
-    get_settings.cache_clear()
-
-
 @pytest.fixture(autouse=True)
-async def _fresh_engine() -> AsyncIterator[None]:
+async def _fresh_engine(_point_at_container: None) -> AsyncIterator[None]:
     get_engine.cache_clear()
     get_session_factory.cache_clear()
 
@@ -85,14 +58,14 @@ async def _fresh_engine() -> AsyncIterator[None]:
 async def tables() -> AsyncIterator[None]:
     async with get_engine().begin() as connection:
         await connection.run_sync(
-            Base.metadata.create_all, tables=[Base.metadata.tables["t_widgets"]]
+            SandboxBase.metadata.create_all, tables=[SandboxBase.metadata.tables["t_widgets"]]
         )
 
     yield
 
     async with get_engine().begin() as connection:
         await connection.run_sync(
-            Base.metadata.drop_all, tables=[Base.metadata.tables["t_widgets"]]
+            SandboxBase.metadata.drop_all, tables=[SandboxBase.metadata.tables["t_widgets"]]
         )
 
 

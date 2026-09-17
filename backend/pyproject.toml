@@ -33,6 +33,7 @@ package = false
 
 [tool.ruff]
 line-length = 100
+exclude = ["alembic/**"]
 
 [tool.ruff.lint]
 select = [
@@ -75,3 +76,6 @@ testpaths = ["tests"]
 pythonpath = ["."]
 addopts = "--strict-markers --strict-config -ra"
 filterwarnings = ["error"]
+
+[alembic.ini]
+file_template = "%%(year)d-%%(month).2d-%%(day).2d_%%(slug)s"
