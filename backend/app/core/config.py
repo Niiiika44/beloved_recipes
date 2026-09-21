@@ -50,6 +50,10 @@ class RedisSection(_Section):
     port: int = 6379
     password: SecretStr
     db: int = 0
+    socket_timeout_seconds: int = 2
+    socket_connect_timeout_seconds: int = 2
+    max_connections: int = 10
+    health_check_interval: int = 10
 
     @property
     def dsn(self) -> str:
