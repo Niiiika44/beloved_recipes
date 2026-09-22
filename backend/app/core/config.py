@@ -17,7 +17,7 @@ class _Section(BaseModel):
 
 class AppSection(_Section):
     env: Literal["local", "ci", "prod"] = "local"
-    name: str = "beloved-recipes"
+    name: str = "beloved_recipes"
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR"] = "INFO"
 
     @property

@@ -1,7 +1,7 @@
 import re
 import uuid
 from collections.abc import AsyncIterator
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from sqlalchemy import MetaData, inspect, select, text
@@ -15,6 +15,7 @@ from app.core.models import NAMING_CONVENTION, IdMixin, TimestampMixin
 
 DURATION = re.compile(r"^(\d+)(ms|s|min)$")
 UNITS = {"ms": 1, "s": 1000, "min": 60_000}
+CLOCK_SKEW_TOLERANCE = timedelta(seconds=5)
 
 
 class SandboxBase(DeclarativeBase):
@@ -243,14 +244,13 @@ async def test_timestamps_are_timezone_aware(session: AsyncSession) -> None:
 
 
 async def test_created_at_is_filled_by_server(session: AsyncSession) -> None:
-    before = datetime.now(UTC)
     widget = Widget(title="серверное время")
     session.add(widget)
 
     await session.commit()
     await session.refresh(widget)
 
-    assert before <= widget.created_at <= datetime.now(UTC)
+    assert abs(widget.created_at - datetime.now(UTC)) < CLOCK_SKEW_TOLERANCE
 
 
 async def test_updated_at_moves_on_update(session: AsyncSession) -> None:
