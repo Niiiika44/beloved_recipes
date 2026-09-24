@@ -1,0 +1,143 @@
+name: CI
+
+defaults:
+  run:
+    shell: bash
+    working-directory: backend
+
+env:
+  SECURITY__SECRET_KEY: ci-not-a-secret
+  DB__USER: postgresql
+  DB__PASSWORD: ci-not-a-secret
+  DB__NAME: recipes
+  DB__PORT: 5432
+  REDIS__PASSWORD: ci-not-a-secret
+  REDIS__PORT: 6379
+
+on:
+  push:
+    branches: [ "master" ]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version-file: "backend/.python-version"
+
+      - name: Install uv and enable caching
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9
+        with:
+          enable-cache: true
+
+      - name: Install the project
+        run: uv sync --locked --all-extras --dev
+
+      - name: Ruff checks
+        run: uv run ruff check .
+
+      - name: Ruff format
+        run: uv run ruff format --check .
+
+  typecheck:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version-file: "backend/.python-version"
+
+      - name: Install uv and enable caching
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9
+        with:
+          enable-cache: true
+
+      - name: Install the project
+        run: uv sync --locked --all-extras --dev
+
+      - name: Mypy typechecks
+        run: uv run mypy app tests --strict
+
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version-file: "backend/.python-version"
+
+      - name: Install uv and enable caching
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9
+        with:
+          enable-cache: true
+
+      - name: Install the project
+        run: uv sync --locked --all-extras --dev
+
+      - name: Run tests
+        run: uv run pytest tests -q
+
+  migrations:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17@sha256:67f41722b7a8cbdb868a44a4995c846eddfdc2973bccb291ce937dce88ad5675
+        env:
+          POSTGRES_USER: ${{ env.DB__USER }}
+          POSTGRES_PASSWORD: ${{ env.DB__PASSWORD }}
+          POSTGRES_DB: ${{ env.DB__NAME }}
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "psql -U $POSTGRES_USER -d $POSTGRES_DB -c 'SELECT 1'"
+          --health-interval 2s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version-file: "backend/.python-version"
+
+      - name: Install uv and enable caching
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9
+        with:
+          enable-cache: true
+
+      - name: Install the project
+        run: uv sync --locked --all-extras --dev
+
+      - name: Run alembic
+        run: uv run alembic upgrade head && uv run alembic downgrade base && uv run alembic upgrade head
+
+  docker-build:
+    needs: [lint, typecheck, test, migrations]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+
+      - name: Enable BuildKit
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build image
+        run: docker build -t recipes:ci .
