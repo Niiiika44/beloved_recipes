@@ -1,0 +1,33 @@
+repos:
+  - repo: 'https://github.com/pre-commit/pre-commit-hooks'
+    rev: v2.4.0
+    hooks:
+      - id: end-of-file-fixer
+      - id: detect-private-key
+      - id: check-ast
+      - id: check-added-large-files
+        args: ['--maxkb=1024']
+      - id: check-yaml
+  - repo: local
+    hooks:
+      - id: ruff-checks
+        name: Ruff checks
+        entry: uv run --project backend ruff check
+        language: system
+        types: [python]
+        files: ^backend/
+        exclude: ^backend/alembic/
+      - id: ruff-formatting
+        name: Ruff formatting
+        entry: uv run --project backend ruff format --check
+        language: system
+        types: [python]
+        files: ^backend/
+        exclude: ^backend/alembic/
+      - id: mypy-type-checks
+        name: Mypy typechecks
+        entry: uv run --directory backend mypy app tests
+        language: system
+        pass_filenames: false
+        types: [python]
+        files: ^backend/
