@@ -87,5 +87,4 @@ def downgrade() -> None:
     op.drop_table('workspaces')
     op.drop_index('users_email_lower_idx', table_name='users')
     op.drop_table('users')
-    sa.Enum(name="workspace_role").drop(op.get_bind())
     # ### end Alembic commands ###
