@@ -5,7 +5,7 @@ from sqlalchemy import BigInteger, DateTime, Enum, ForeignKey, Index, LargeBinar
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.models import Base, IdMixin, TimestampMixin
-from app.modules.identity.enums import WorkspaceRole, WorkspaceTheme
+from app.modules.identity.domain.enums import WorkspaceRole, WorkspaceTheme
 
 
 class User(IdMixin, TimestampMixin, Base):

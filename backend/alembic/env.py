@@ -8,7 +8,7 @@ from sqlalchemy.ext.asyncio import async_engine_from_config
 from alembic import context
 from app.core.config import get_settings
 from app.core.models import Base
-from app.modules.identity.models import User, Workspace, Invite, Membership  # noqa: F401
+import app.modules.identity.infrastructure.models  # noqa: F401
 
 settings = get_settings()
 
