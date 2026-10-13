@@ -4,6 +4,7 @@ from pydantic import BaseModel, Field
 
 BLANK_TYPE = "about:blank"
 PROBLEM_TYPE_PATH = "/problems/"
+AUTHENTICATE_HEADER = "Cookie"
 
 
 class ProblemDetail(BaseModel):

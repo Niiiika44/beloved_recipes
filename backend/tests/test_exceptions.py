@@ -1,3 +1,4 @@
+import http
 from collections.abc import AsyncIterator, MutableMapping
 from pathlib import Path
 from typing import Any
@@ -13,7 +14,9 @@ from app.api.schemas import BLANK_TYPE
 from app.core.exceptions import (
     AppError,
     ConflictError,
+    DependencyUnavailableError,
     InvalidInputError,
+    NotAuthenticatedError,
     NotFoundError,
     PermissionDeniedError,
 )
@@ -38,6 +41,14 @@ class OrderAlreadyClosedError(ConflictError):
 
 class InviteExpiredError(InvalidInputError):
     code = "invite_expired"
+
+
+class SessionExpiredError(NotAuthenticatedError):
+    pass
+
+
+class CacheUnreachableError(DependencyUnavailableError):
+    pass
 
 
 class Amount(BaseModel):
@@ -81,6 +92,32 @@ def _build_app() -> FastAPI:
     @app.get("/t/bare")
     async def bare() -> None:
         raise AppError("uncategorized")
+
+    @app.get("/t/unauthenticated")
+    async def unauthenticated() -> None:
+        raise NotAuthenticatedError("Session is missing or invalid")
+
+    @app.get("/t/unauthenticated-sub")
+    async def unauthenticated_sub() -> None:
+        raise SessionExpiredError("Session is missing or invalid")
+
+    @app.get("/t/unavailable")
+    async def unavailable() -> None:
+        try:
+            raise ConnectionError(SECRET_IN_MESSAGE)
+        except ConnectionError as exc:
+            raise DependencyUnavailableError("Session store is unavailable") from exc
+
+    @app.get("/t/unavailable-sub")
+    async def unavailable_sub() -> None:
+        try:
+            raise ConnectionError(SECRET_IN_MESSAGE)
+        except ConnectionError as exc:
+            raise CacheUnreachableError("Session store is unavailable") from exc
+
+    @app.get("/t/bare-category")
+    async def bare_category() -> None:
+        raise NotFoundError("Something is missing")
 
     @app.post("/t/amount")
     async def amount(body: Amount) -> dict[str, int]:
@@ -155,6 +192,10 @@ def test_spec_does_not_depend_on_table_order(monkeypatch: pytest.MonkeyPatch) ->
 )
 def test_problem_type_is_relative_path(code: str, expected: str) -> None:
     assert problem_type(code) == expected
+
+
+def test_missing_code_means_blank_type() -> None:
+    assert problem_type(None) == BLANK_TYPE
 
 
 def test_domain_layer_knows_nothing_about_http() -> None:
@@ -305,6 +346,8 @@ async def test_request_id_header_matches_body(client: httpx.AsyncClient) -> None
         ("GET", "/nope", None),
         ("GET", "/t/not-found", None),
         ("POST", "/t/amount", {"amount": "x"}),
+        ("GET", "/t/unauthenticated", None),
+        ("GET", "/t/unauthenticated-sub", None),
     ],
 )
 async def test_client_errors_are_not_logged_as_errors(
@@ -321,3 +364,92 @@ async def test_empty_fields_are_omitted(client: httpx.AsyncClient) -> None:
 
     assert "errors" not in body
     assert None not in body.values()
+
+
+@pytest.mark.parametrize("path", ["/t/unauthenticated", "/t/unauthenticated-sub"])
+async def test_unauthenticated_is_401_with_blank_type(client: httpx.AsyncClient, path: str) -> None:
+    response = await client.get(path)
+    body = response.json()
+
+    assert response.status_code == 401
+    assert response.headers["content-type"] == PROBLEM_JSON
+    assert body["type"] == BLANK_TYPE
+    assert body["title"] == "Unauthorized"
+    assert body["status"] == 401
+    assert body["request_id"] == response.headers["x-request-id"]
+
+
+@pytest.mark.parametrize("path", ["/t/unauthenticated", "/t/unauthenticated-sub"])
+async def test_unauthenticated_names_cookie_scheme(client: httpx.AsyncClient, path: str) -> None:
+    response = await client.get(path)
+
+    assert response.headers["www-authenticate"] == "Cookie"
+
+
+@pytest.mark.parametrize("path", ["/t/unavailable", "/t/unavailable-sub"])
+async def test_unavailable_is_503_with_blank_type(client: httpx.AsyncClient, path: str) -> None:
+    response = await client.get(path)
+    body = response.json()
+
+    assert response.status_code == 503
+    assert response.headers["content-type"] == PROBLEM_JSON
+    assert body["type"] == BLANK_TYPE
+    assert body["title"] == "Service Unavailable"
+    assert body["request_id"] == response.headers["x-request-id"]
+    assert "www-authenticate" not in response.headers
+
+
+@pytest.mark.parametrize("path", ["/t/unavailable", "/t/unavailable-sub"])
+async def test_unavailable_hides_its_cause(client: httpx.AsyncClient, path: str) -> None:
+    response = await client.get(path)
+
+    assert "hunter2" not in response.text
+    assert "ConnectionError" not in response.text
+    assert "Traceback" not in response.text
+
+
+@pytest.mark.parametrize("path", ["/t/unavailable", "/t/unavailable-sub"])
+async def test_unavailable_is_logged_once_with_cause_and_request_id(
+    client: httpx.AsyncClient, path: str
+) -> None:
+    with structlog.testing.capture_logs(
+        processors=[structlog.contextvars.merge_contextvars]
+    ) as records:
+        response = await client.get(path)
+
+    logged = _errors_logged(records)
+    assert len(logged) == 1
+    assert logged[0]["status_code"] == 503
+    assert isinstance(logged[0]["exc_info"], DependencyUnavailableError)
+    assert isinstance(logged[0]["exc_info"].__cause__, ConnectionError)
+    assert logged[0]["request_id"] == response.headers["x-request-id"]
+
+
+async def test_category_raised_directly_has_blank_type(client: httpx.AsyncClient) -> None:
+    response = await client.get("/t/bare-category")
+    body = response.json()
+
+    assert response.status_code == 404
+    assert body["type"] == BLANK_TYPE
+    assert body["title"] == "Not Found"
+
+
+@pytest.mark.parametrize(
+    "category", list(CATEGORY_PROBLEMS), ids=[cls.__name__ for cls in CATEGORY_PROBLEMS]
+)
+def test_category_title_is_http_status_phrase(category: type[AppError]) -> None:
+    spec = CATEGORY_PROBLEMS[category]
+
+    assert spec.title == http.HTTPStatus(spec.status).phrase
+
+
+async def test_unexpected_error_title_is_http_status_phrase(client: httpx.AsyncClient) -> None:
+    response = await client.get("/t/boom")
+
+    assert response.json()["title"] == "Internal Server Error"
+
+
+async def test_other_errors_do_not_claim_authentication_scheme(client: httpx.AsyncClient) -> None:
+    response = await client.get("/t/not-found")
+
+    assert "www-authenticate" not in response.headers

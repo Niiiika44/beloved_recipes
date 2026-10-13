@@ -9,12 +9,14 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from app.api.schemas import BLANK_TYPE, PROBLEM_TYPE_PATH, ProblemDetail
+from app.api.schemas import AUTHENTICATE_HEADER, BLANK_TYPE, PROBLEM_TYPE_PATH, ProblemDetail
 from app.core.context import get_request_id
 from app.core.exceptions import (
     AppError,
     ConflictError,
+    DependencyUnavailableError,
     InvalidInputError,
+    NotAuthenticatedError,
     NotFoundError,
     PermissionDeniedError,
 )
@@ -25,14 +27,19 @@ logger = structlog.get_logger(__name__)
 class ProblemSpec(NamedTuple):
     status: int
     title: str
+    headers: Mapping[str, str] | None = None
 
 
 CATEGORY_PROBLEMS: dict[type[AppError], ProblemSpec] = {
-    NotFoundError: ProblemSpec(404, "Resource is not found"),
-    PermissionDeniedError: ProblemSpec(403, "Permission denied"),
+    NotAuthenticatedError: ProblemSpec(
+        401, "Unauthorized", {"WWW-Authenticate": AUTHENTICATE_HEADER}
+    ),
+    PermissionDeniedError: ProblemSpec(403, "Forbidden"),
+    NotFoundError: ProblemSpec(404, "Not Found"),
     ConflictError: ProblemSpec(409, "Conflict"),
-    InvalidInputError: ProblemSpec(422, "Invalid input data"),
-    AppError: ProblemSpec(500, "Internal error"),
+    InvalidInputError: ProblemSpec(422, "Unprocessable Content"),
+    DependencyUnavailableError: ProblemSpec(503, "Service Unavailable"),
+    AppError: ProblemSpec(500, "Internal Server Error"),
 }
 
 
@@ -58,8 +65,11 @@ def spec_for(error: AppError) -> ProblemSpec:
     return CATEGORY_PROBLEMS[AppError]
 
 
-def problem_type(code: str) -> str:
-    return PROBLEM_TYPE_PATH + code.replace("_", "-")
+def problem_type(code: str | None) -> str:
+    if code is not None:
+        return PROBLEM_TYPE_PATH + code.replace("_", "-")
+    else:
+        return BLANK_TYPE
 
 
 def problem_response(
@@ -95,10 +105,10 @@ async def handle_app_error(request: Request, exc: Exception) -> Response:
     if not isinstance(exc, AppError):
         raise ValueError("AppError expected")
     spec = spec_for(exc)
-    if spec.status == 500:
+    if spec.status >= 500:
         _log_error(
             request,
-            status_code=500,
+            status_code=spec.status,
             error_type=type(exc).__name__,
             message=exc.message,
             exc_info=exc,
@@ -109,6 +119,7 @@ async def handle_app_error(request: Request, exc: Exception) -> Response:
         title=spec.title,
         detail=exc.message,
         problem_type_uri=problem_type(exc.code),
+        headers=spec.headers,
     )
 
 
@@ -156,7 +167,7 @@ async def handle_unexpected_error(request: Request, exc: Exception) -> Response:
     return problem_response(
         request,
         status=status_code,
-        title="Internal service error",
+        title="Internal Server Error",
         detail="internal service error",
     )
 
