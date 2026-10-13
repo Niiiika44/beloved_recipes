@@ -7,7 +7,7 @@ from pydantic import ValidationError
 
 from app.core.config import Settings, get_settings
 
-SECTIONS = ("APP", "DB", "REDIS", "SECURITY")
+SECTIONS = ("APP", "DB", "REDIS", "SECURITY", "SESSION")
 
 REQUIRED_ENV = {
     "DB__USER": "recipes",
@@ -15,6 +15,13 @@ REQUIRED_ENV = {
     "DB__NAME": "recipes",
     "REDIS__PASSWORD": "redis-secret",
     "SECURITY__SECRET_KEY": "s" * 32,
+}
+
+PROD_ENV = {
+    "APP__ENV": "prod",
+    "SECURITY__SECRET_KEY": "k" * 32,
+    "SESSION__COOKIE_NAME": "__Host-session",
+    "SESSION__COOKIE_SECURE": "true",
 }
 
 TRICKY_PASSWORD = "p@ss/wo rd#1:2?3"
@@ -142,11 +149,11 @@ def test_unknown_app_env_is_rejected(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def test_prod_rejects_short_secret_key(monkeypatch: pytest.MonkeyPatch) -> None:
     with pytest.raises(ValidationError, match="SECRET_KEY"):
-        _build(monkeypatch, APP__ENV="prod", SECURITY__SECRET_KEY="short")
+        _build(monkeypatch, **(PROD_ENV | {"SECURITY__SECRET_KEY": "short"}))
 
 
 def test_prod_accepts_long_secret_key(monkeypatch: pytest.MonkeyPatch) -> None:
-    settings = _build(monkeypatch, APP__ENV="prod", SECURITY__SECRET_KEY="k" * 32)
+    settings = _build(monkeypatch, **PROD_ENV)
 
     assert settings.app.is_prod is True
 
@@ -171,3 +178,101 @@ def test_get_settings_returns_cached_instance(monkeypatch: pytest.MonkeyPatch) -
     monkeypatch.setenv("DB__NAME", "other")
 
     assert get_settings().db.name == "other"
+
+
+def test_session_section_is_optional_and_has_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
+    settings = _build(monkeypatch)
+
+    assert settings.session.cookie_name == "session"
+    assert settings.session.cookie_secure is False
+    assert settings.session.idle_ttl_seconds == 1_209_600
+    assert settings.session.absolute_ttl_seconds == 2_592_000
+    assert settings.session.operation_timeout_seconds == 1.0
+
+
+def test_session_values_are_read_from_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    settings = _build(
+        monkeypatch,
+        SESSION__COOKIE_NAME="sid",
+        SESSION__IDLE_TTL_SECONDS="60",
+        SESSION__ABSOLUTE_TTL_SECONDS="120",
+        SESSION__OPERATION_TIMEOUT_SECONDS="0.5",
+    )
+
+    assert settings.session.cookie_name == "sid"
+    assert settings.session.idle_ttl_seconds == 60
+    assert settings.session.absolute_ttl_seconds == 120
+    assert settings.session.operation_timeout_seconds == 0.5
+
+
+def test_prod_rejects_insecure_session_cookie(monkeypatch: pytest.MonkeyPatch) -> None:
+    with pytest.raises(ValidationError, match="COOKIE_SECURE"):
+        _build(
+            monkeypatch,
+            **(PROD_ENV | {"SESSION__COOKIE_NAME": "session", "SESSION__COOKIE_SECURE": "false"}),
+        )
+
+
+def test_prod_requires_host_prefixed_cookie_name(monkeypatch: pytest.MonkeyPatch) -> None:
+    with pytest.raises(ValidationError, match="COOKIE_NAME"):
+        _build(monkeypatch, **(PROD_ENV | {"SESSION__COOKIE_NAME": "session"}))
+
+
+def test_prod_rejects_secure_prefix_instead_of_host_prefix(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    with pytest.raises(ValidationError, match="COOKIE_NAME"):
+        _build(monkeypatch, **(PROD_ENV | {"SESSION__COOKIE_NAME": "__Secure-session"}))
+
+
+@pytest.mark.parametrize("name", ["__Host-session", "__Secure-session"])
+def test_prefixed_cookie_requires_secure_in_any_env(
+    monkeypatch: pytest.MonkeyPatch, name: str
+) -> None:
+    with pytest.raises(ValidationError, match="COOKIE_NAME"):
+        _build(monkeypatch, SESSION__COOKIE_NAME=name, SESSION__COOKIE_SECURE="false")
+
+
+@pytest.mark.parametrize("name", ["__Host-session", "__Secure-session"])
+def test_prefixed_secure_cookie_is_allowed_locally(
+    monkeypatch: pytest.MonkeyPatch, name: str
+) -> None:
+    settings = _build(monkeypatch, SESSION__COOKIE_NAME=name, SESSION__COOKIE_SECURE="true")
+
+    assert settings.session.cookie_name == name
+
+
+def test_absolute_ttl_shorter_than_idle_is_rejected(monkeypatch: pytest.MonkeyPatch) -> None:
+    with pytest.raises(ValidationError, match="ABSOLUTE_TTL"):
+        _build(monkeypatch, SESSION__IDLE_TTL_SECONDS="100", SESSION__ABSOLUTE_TTL_SECONDS="99")
+
+
+def test_absolute_ttl_equal_to_idle_is_allowed(monkeypatch: pytest.MonkeyPatch) -> None:
+    settings = _build(
+        monkeypatch, SESSION__IDLE_TTL_SECONDS="100", SESSION__ABSOLUTE_TTL_SECONDS="100"
+    )
+
+    assert settings.session.absolute_ttl_seconds == 100
+
+
+@pytest.mark.parametrize(
+    ("key", "value"),
+    [
+        ("SESSION__IDLE_TTL_SECONDS", "0"),
+        ("SESSION__IDLE_TTL_SECONDS", "-1"),
+        ("SESSION__ABSOLUTE_TTL_SECONDS", "0"),
+        ("SESSION__ABSOLUTE_TTL_SECONDS", "-1"),
+        ("SESSION__OPERATION_TIMEOUT_SECONDS", "0"),
+        ("SESSION__OPERATION_TIMEOUT_SECONDS", "-0.5"),
+    ],
+)
+def test_non_positive_session_durations_are_rejected(
+    monkeypatch: pytest.MonkeyPatch, key: str, value: str
+) -> None:
+    with pytest.raises(ValidationError):
+        _build(monkeypatch, **{key: value})
+
+
+def test_typo_inside_session_section_is_rejected(monkeypatch: pytest.MonkeyPatch) -> None:
+    with pytest.raises(ValidationError):
+        _build(monkeypatch, SESSION__COOKIE_NAMEE="sid")

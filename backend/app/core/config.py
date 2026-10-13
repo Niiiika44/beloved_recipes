@@ -25,6 +25,29 @@ class AppSection(_Section):
         return self.env == "prod"
 
 
+class SessionSection(_Section):
+    cookie_name: str = "session"
+    cookie_secure: bool = False
+    idle_ttl_seconds: int = Field(1_209_600, gt=0)
+    absolute_ttl_seconds: int = Field(2_592_000, gt=0)
+    operation_timeout_seconds: float = Field(1.0, gt=0)
+
+    @model_validator(mode="after")
+    def _validate_consistency(self) -> Self:
+        if self.absolute_ttl_seconds < self.idle_ttl_seconds:
+            raise ValueError(
+                "SESSION__ABSOLUTE_TTL_SECONDS should be greater than "
+                "or equal to SESSION__IDLE_TTL_SECONDS"
+            )
+        if (
+            self.cookie_name.startswith("__Host-") or self.cookie_name.startswith("__Secure-")
+        ) and not self.cookie_secure:
+            raise ValueError(
+                "SESSION__COOKIE_NAME with prefixes __Host- or __Secure- should be secure"
+            )
+        return self
+
+
 class DatabaseSection(_Section):
     host: str = "127.0.0.1"
     port: int = 5432
@@ -77,6 +100,7 @@ class Settings(BaseSettings):
 
     app: AppSection = Field(default_factory=AppSection)
     db: DatabaseSection
+    session: SessionSection = Field(default_factory=SessionSection)
     redis: RedisSection
     security: SecuritySection
 
@@ -87,7 +111,13 @@ class Settings(BaseSettings):
 
         secret_key = self.security.secret_key.get_secret_value()
         if len(secret_key) < MIN_PROD_SECRET_KEY_LENGTH:
-            raise ValueError(f"SECURITY__SECRET_KEY короче {MIN_PROD_SECRET_KEY_LENGTH} символов")
+            raise ValueError(
+                f"SECURITY__SECRET_KEY is shorter than {MIN_PROD_SECRET_KEY_LENGTH} symbols"
+            )
+        if not self.session.cookie_secure:
+            raise ValueError("SESSION__COOKIE_SECURE should be true")
+        if not self.session.cookie_name.startswith("__Host-"):
+            raise ValueError("SESSION__COOKIE_NAME should start with __Host- prefix")
         return self
 
 

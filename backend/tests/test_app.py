@@ -57,6 +57,8 @@ async def test_docs_are_available_outside_prod(monkeypatch: pytest.MonkeyPatch, 
 async def test_docs_are_hidden_in_prod(monkeypatch: pytest.MonkeyPatch, path: str) -> None:
     monkeypatch.setenv("APP__ENV", "prod")
     monkeypatch.setenv("SECURITY__SECRET_KEY", PROD_SECRET)
+    monkeypatch.setenv("SESSION__COOKIE_NAME", "__Host-session")
+    monkeypatch.setenv("SESSION__COOKIE_SECURE", "true")
     get_settings.cache_clear()
 
     assert (await _get(path)).status_code == 404
