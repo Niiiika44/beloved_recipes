@@ -1,13 +1,17 @@
 import os
 from collections.abc import Iterator, Mapping
+from pathlib import Path
 
 import pytest
+from alembic.config import Config
 from testcontainers.community.postgres import PostgresContainer
 from testcontainers.community.redis import RedisContainer
 
+from alembic import command
 from app.core.config import get_settings
 
 REDIS_TEST_PASSWORD = "test-redis-password"
+ALEMBIC_INI = Path(__file__).resolve().parents[1] / "alembic.ini"
 
 
 def _override_env(overrides: Mapping[str, str]) -> Iterator[None]:
@@ -59,3 +63,13 @@ def _point_redis_at_container(redis_server: RedisContainer) -> Iterator[None]:
             "REDIS__PASSWORD": REDIS_TEST_PASSWORD,
         }
     )
+
+
+@pytest.fixture(scope="module")
+def migrated_schema(_point_at_container: None) -> Iterator[None]:
+    config = Config(str(ALEMBIC_INI))
+    command.upgrade(config, "head")
+
+    yield
+
+    command.downgrade(config, "base")

@@ -1,35 +1,20 @@
 import uuid
-from collections.abc import AsyncIterator, Iterator
-from pathlib import Path
+from collections.abc import AsyncIterator
 from typing import Any
 
 import pytest
-from alembic.config import Config
 from sqlalchemy import event, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from alembic import command
 from app.core.db import dispose_engine, get_engine, get_session_factory
 from app.modules.identity.domain.enums import WorkspaceRole
 from app.modules.identity.infrastructure.models import Membership, User, Workspace
 from app.modules.identity.infrastructure.repositories import SqlUserRepository
 from app.modules.identity.service.dto import MembershipDTO, UserDTO
 
-ALEMBIC_INI = Path(__file__).resolve().parents[1] / "alembic.ini"
-
-
-@pytest.fixture(scope="module")
-def migrated(_point_at_container: None) -> Iterator[None]:
-    config = Config(str(ALEMBIC_INI))
-    command.upgrade(config, "head")
-
-    yield
-
-    command.downgrade(config, "base")
-
 
 @pytest.fixture
-async def session(migrated: None) -> AsyncIterator[AsyncSession]:
+async def session(migrated_schema: None) -> AsyncIterator[AsyncSession]:
     get_engine.cache_clear()
     get_session_factory.cache_clear()
     async with get_session_factory()() as instance:
