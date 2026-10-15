@@ -1,4 +1,3 @@
-from collections.abc import AsyncIterator
 from functools import lru_cache
 
 from sqlalchemy.ext.asyncio import (
@@ -41,10 +40,3 @@ async def dispose_engine() -> None:
 @lru_cache(maxsize=1)
 def get_session_factory() -> async_sessionmaker[AsyncSession]:
     return async_sessionmaker(bind=get_engine(), expire_on_commit=False)
-
-
-async def get_session() -> AsyncIterator[AsyncSession]:
-    """Provides a database session for dependency injection."""
-    async_session_local = get_session_factory()
-    async with async_session_local() as session:
-        yield session

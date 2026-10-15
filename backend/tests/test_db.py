@@ -10,7 +10,7 @@ from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 from sqlalchemy.pool import QueuePool
 
 from app.core.config import get_settings
-from app.core.db import dispose_engine, get_engine, get_session, get_session_factory
+from app.core.db import dispose_engine, get_engine, get_session_factory
 from app.core.models import NAMING_CONVENTION, IdMixin, TimestampMixin
 
 DURATION = re.compile(r"^(\d+)(ms|s|min)$")
@@ -32,11 +32,6 @@ def _pool() -> QueuePool:
     pool = get_engine().pool
     assert isinstance(pool, QueuePool)
     return pool
-
-
-async def _exhaust(generator: AsyncIterator[AsyncSession]) -> None:
-    with pytest.raises(StopAsyncIteration):
-        await anext(generator)
 
 
 def _to_ms(value: str) -> int:
@@ -125,31 +120,6 @@ async def test_pool_is_configured_from_settings() -> None:
     assert pool._max_overflow == settings.db.max_overflow
 
 
-async def test_dependency_yields_distinct_sessions(tables: None) -> None:
-    first_gen = get_session()
-    second_gen = get_session()
-
-    first = await first_gen.__anext__()
-    second = await second_gen.__anext__()
-
-    assert first is not second
-
-    await _exhaust(first_gen)
-    await _exhaust(second_gen)
-
-
-async def test_dependency_returns_connection_to_pool(tables: None) -> None:
-    generator = get_session()
-    instance = await generator.__anext__()
-    await instance.execute(select(Widget))
-    assert _pool().checkedout() == 1
-
-    await _exhaust(generator)
-
-    assert _pool().checkedout() == 0
-    assert not instance.in_transaction()
-
-
 async def test_uncommitted_changes_are_invisible_elsewhere(session: AsyncSession) -> None:
     session.add(Widget(title="черновик"))
     await session.flush()
@@ -170,20 +140,6 @@ async def test_committed_changes_are_visible_elsewhere(session: AsyncSession) ->
         found = (await other.execute(select(Widget).where(Widget.title == "сохранённый"))).all()
 
     assert len(found) == 1
-
-
-async def test_dependency_does_not_commit_by_itself(tables: None) -> None:
-    generator = get_session()
-    instance = await generator.__anext__()
-    instance.add(Widget(title="без коммита"))
-    await instance.flush()
-    await _exhaust(generator)
-
-    factory = get_session_factory()
-    async with factory() as other:
-        found = (await other.execute(select(Widget))).all()
-
-    assert found == []
 
 
 async def test_attributes_are_readable_after_commit(session: AsyncSession) -> None:
