@@ -1,13 +1,18 @@
+import asyncio
 import json
 import re
 import secrets
-from collections.abc import Callable
+from collections.abc import AsyncGenerator, Callable
+from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
 from hashlib import sha256
 from uuid import UUID
 
+from redis.asyncio import ConnectionError as RedisConnectionError
 from redis.asyncio import Redis
+from redis.asyncio import TimeoutError as RedisTimeoutError
 
+from app.modules.identity.infrastructure.exceptions import SessionStoreUnavailableError
 from app.modules.identity.service.dto import SessionDTO
 
 TOKEN_PATTERN = re.compile(r"[A-Za-z0-9_-]{43}")
@@ -33,18 +38,28 @@ class RedisSessionStore:
     def _calc_key(token: str) -> str:
         return KEY_PREFIX + sha256(token.encode()).hexdigest()
 
+    @asynccontextmanager
+    async def _guard(self) -> AsyncGenerator[None]:
+        try:
+            async with asyncio.timeout(self._operation_timeout_seconds):
+                yield
+        except (TimeoutError, RedisTimeoutError, RedisConnectionError) as exc:
+            raise SessionStoreUnavailableError("Session store is unavailable") from exc
+
     async def create(self, user_id: UUID) -> str:
         token = secrets.token_urlsafe(32)
         key = self._calc_key(token)
         value = {"user_id": str(user_id), "created_at": self._now().isoformat()}
-        await self._client.set(key, json.dumps(value), ex=self._idle_ttl_seconds)
+        async with self._guard():
+            await self._client.set(key, json.dumps(value), ex=self._idle_ttl_seconds)
         return token
 
     async def resolve(self, token: str) -> SessionDTO | None:
         if not TOKEN_PATTERN.fullmatch(token):
             return None
         key = self._calc_key(token)
-        value = await self._client.getex(key, ex=self._idle_ttl_seconds)
+        async with self._guard():
+            value = await self._client.getex(key, ex=self._idle_ttl_seconds)
         if value is None:
             return None
         value_dct = json.loads(value)
@@ -61,4 +76,5 @@ class RedisSessionStore:
         if not TOKEN_PATTERN.fullmatch(token):
             return
         key = self._calc_key(token)
-        await self._client.delete(key)
+        async with self._guard():
+            await self._client.delete(key)

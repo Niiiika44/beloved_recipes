@@ -1,4 +1,7 @@
+import asyncio
 import re
+import socket
+import time
 import uuid
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime, timedelta
@@ -7,8 +10,14 @@ from typing import Any, cast
 
 import pytest
 from redis.asyncio import Redis
+from redis.asyncio.retry import Retry
+from redis.backoff import NoBackoff
+from redis.exceptions import ConnectionError as RedisConnectionError
+from redis.exceptions import RedisError, ResponseError
 
+from app.core.exceptions import DependencyUnavailableError
 from app.core.redis import close_redis, get_redis
+from app.modules.identity.infrastructure.exceptions import SessionStoreUnavailableError
 from app.modules.identity.infrastructure.redis_session_store import RedisSessionStore
 
 IDLE = 3_600
@@ -37,12 +46,12 @@ def _key(token: str) -> str:
     return "session:" + sha256(token.encode()).hexdigest()
 
 
-def _store(client: Redis, clock: Clock) -> RedisSessionStore:
+def _store(client: Redis, clock: Clock, timeout: float = 1.0) -> RedisSessionStore:
     return RedisSessionStore(
         client=client,
         idle_ttl_seconds=IDLE,
         absolute_ttl_seconds=ABSOLUTE,
-        operation_timeout_seconds=1.0,
+        operation_timeout_seconds=timeout,
         now=clock,
     )
 
@@ -277,3 +286,172 @@ async def test_absolute_expiry_of_one_session_spares_newer_ones(
 
     assert await store.resolve(old) is None
     assert await store.resolve(fresh) is not None
+
+
+OPERATIONS = ["create", "resolve", "revoke"]
+WELL_FORMED = "A" * 43
+
+
+async def _call(store: RedisSessionStore, operation: str) -> None:
+    if operation == "create":
+        await store.create(uuid.uuid4())
+    elif operation == "resolve":
+        await store.resolve(WELL_FORMED)
+    else:
+        await store.revoke(WELL_FORMED)
+
+
+def _free_port() -> int:
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        port: int = probe.getsockname()[1]
+    return port
+
+
+@pytest.fixture
+async def refusing_redis() -> AsyncIterator[Redis]:
+    client = Redis(
+        host="127.0.0.1",
+        port=_free_port(),
+        decode_responses=True,
+        socket_connect_timeout=5,
+        socket_timeout=5,
+    )
+
+    yield client
+
+    await client.aclose()
+
+
+@pytest.fixture
+async def refusing_redis_without_retries() -> AsyncIterator[Redis]:
+    client = Redis(
+        host="127.0.0.1",
+        port=_free_port(),
+        decode_responses=True,
+        socket_connect_timeout=5,
+        socket_timeout=5,
+        retry=Retry(NoBackoff(), 0),
+    )
+
+    yield client
+
+    await client.aclose()
+
+
+@pytest.fixture
+async def silent_redis() -> AsyncIterator[Redis]:
+    writers: list[asyncio.StreamWriter] = []
+
+    async def swallow(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        writers.append(writer)
+        await reader.read()
+
+    server = await asyncio.start_server(swallow, "127.0.0.1", 0)
+    port = server.sockets[0].getsockname()[1]
+    client = Redis(
+        host="127.0.0.1",
+        port=port,
+        decode_responses=True,
+        socket_connect_timeout=30,
+        socket_timeout=30,
+    )
+
+    yield client
+
+    await client.aclose()
+    for writer in writers:
+        writer.close()
+    server.close()
+    await server.wait_closed()
+
+
+@pytest.mark.parametrize("operation", OPERATIONS)
+async def test_unreachable_redis_is_reported_as_unavailable(
+    refusing_redis: Redis, clock: Clock, operation: str
+) -> None:
+    store = _store(refusing_redis, clock)
+    started = time.monotonic()
+
+    with pytest.raises(DependencyUnavailableError) as caught:
+        async with asyncio.timeout(5):
+            await _call(store, operation)
+
+    assert time.monotonic() - started < 3
+    assert isinstance(caught.value.__cause__, (TimeoutError, RedisError))
+
+
+@pytest.mark.parametrize("operation", OPERATIONS)
+async def test_hanging_redis_is_cut_by_operation_timeout(
+    silent_redis: Redis, clock: Clock, operation: str
+) -> None:
+    store = _store(silent_redis, clock, timeout=0.3)
+    started = time.monotonic()
+
+    with pytest.raises(DependencyUnavailableError) as caught:
+        async with asyncio.timeout(5):
+            await _call(store, operation)
+
+    assert time.monotonic() - started < 1.5
+    assert isinstance(caught.value.__cause__, TimeoutError)
+
+
+@pytest.mark.parametrize("operation", OPERATIONS)
+async def test_refused_connection_is_reported_as_unavailable(
+    refusing_redis_without_retries: Redis, clock: Clock, operation: str
+) -> None:
+    store = _store(refusing_redis_without_retries, clock)
+
+    with pytest.raises(DependencyUnavailableError) as caught:
+        async with asyncio.timeout(5):
+            await _call(store, operation)
+
+    assert isinstance(caught.value.__cause__, RedisConnectionError)
+
+
+async def test_unavailability_message_hides_connection_details(
+    refusing_redis_without_retries: Redis, clock: Clock
+) -> None:
+    port = refusing_redis_without_retries.connection_pool.connection_kwargs["port"]
+    store = _store(refusing_redis_without_retries, clock)
+
+    with pytest.raises(DependencyUnavailableError) as caught:
+        async with asyncio.timeout(5):
+            await store.resolve(WELL_FORMED)
+
+    assert caught.value.message
+    assert str(port) not in caught.value.message
+    assert "127.0.0.1" not in caught.value.message
+
+
+async def test_timeout_still_produces_a_meaningful_message(
+    silent_redis: Redis, clock: Clock
+) -> None:
+    store = _store(silent_redis, clock, timeout=0.3)
+
+    with pytest.raises(DependencyUnavailableError) as caught:
+        async with asyncio.timeout(5):
+            await store.resolve(WELL_FORMED)
+
+    assert caught.value.message
+
+
+async def test_unavailability_names_the_session_store(
+    refusing_redis_without_retries: Redis, clock: Clock
+) -> None:
+    store = _store(refusing_redis_without_retries, clock)
+
+    with pytest.raises(SessionStoreUnavailableError):
+        async with asyncio.timeout(5):
+            await store.resolve(WELL_FORMED)
+
+
+async def test_corrupted_entry_is_not_disguised_as_unavailability(
+    store: RedisSessionStore, redis_client: Redis
+) -> None:
+    token = await store.create(uuid.uuid4())
+    await redis_client.delete(_key(token))
+    await redis_client.hset(_key(token), mapping={"user_id": "x"})
+
+    with pytest.raises(ResponseError):
+        await store.resolve(token)
