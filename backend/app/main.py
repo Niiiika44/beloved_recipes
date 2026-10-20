@@ -11,8 +11,7 @@ from app.core.db import dispose_engine, get_engine
 from app.core.logging import configure_logging
 from app.core.middleware import request_context
 from app.core.redis import close_redis, get_redis
-from app.modules.identity.routes.auth_router import router as auth_router
-from app.modules.identity.routes.users_router import router as users_router
+from app.modules.identity.routes.router import router as identity_router
 
 logger = structlog.get_logger(__name__)
 
@@ -51,8 +50,7 @@ def create_app() -> FastAPI:
     api_router = APIRouter(prefix=API_V1_PREFIX)
     app.include_router(api_router)
     app.include_router(health_router)
-    api_router.include_router(users_router)
-    api_router.include_router(auth_router)
+    api_router.include_router(identity_router)
     return app
 
 
