@@ -33,10 +33,12 @@ async def request_context(request: Request, call_next: RequestResponseEndpoint) 
     finally:
         duration_ms = (time.perf_counter() - start) * 1000
         route = getattr(request.scope.get("route"), "path", None) or "<unmatched>"
+        user_id = getattr(request.state, "user_id", None)
         logger.info(
             "http.requested",
             method=request.method,
             route=route,
             status=status,
             duration_ms=duration_ms,
+            user_id=str(user_id) if user_id is not None else None,
         )

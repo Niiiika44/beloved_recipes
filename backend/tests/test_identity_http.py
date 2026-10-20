@@ -1,17 +1,22 @@
+import json
+import logging
 import socket
 import time
 import uuid
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Callable, Iterator
 from datetime import UTC, datetime, timedelta
 from hashlib import sha256
+from http.cookies import SimpleCookie
 from typing import Any
 
 import httpx
 import pytest
+import structlog
 from fastapi import FastAPI
 from redis.asyncio import Redis
 from sqlalchemy import text
 from sqlalchemy.pool import QueuePool
+from structlog.processors import JSONRenderer
 
 from app.core.config import get_settings
 from app.core.db import dispose_engine, get_engine, get_session_factory
@@ -24,6 +29,7 @@ from app.modules.identity.routes.dependencies import get_session_store
 from app.modules.identity.service.dto import SessionDTO
 
 ME = "/api/v1/users/me"
+LOGOUT = "/api/v1/auth/logout"
 PROBLEM_JSON = "application/problem+json"
 AVATAR = "https://lh3.googleusercontent.com/a/ACg8ocK-avatar=s96-c"
 
@@ -336,3 +342,183 @@ async def test_endpoint_lives_only_under_versioned_prefix(client: httpx.AsyncCli
     response = await client.get("/users/me")
 
     assert response.status_code == 404
+
+
+def _deletion_cookie(response: httpx.Response) -> Any:
+    headers = response.headers.get_list("set-cookie")
+    assert len(headers) == 1
+    jar: SimpleCookie = SimpleCookie()
+    jar.load(headers[0])
+    name = get_settings().session.cookie_name
+    assert list(jar) == [name]
+    return jar[name]
+
+
+def _assert_deletes_session_cookie(response: httpx.Response, secure: bool) -> None:
+    morsel = _deletion_cookie(response)
+    assert morsel.value in {"", '""'}
+    assert morsel["max-age"] == "0"
+    assert morsel["path"] == "/"
+    assert morsel["httponly"] is True
+    assert morsel["samesite"].lower() == "lax"
+    assert bool(morsel["secure"]) is secure
+    assert morsel["domain"] == ""
+
+
+async def test_logout_ends_the_session(client: httpx.AsyncClient) -> None:
+    token = await _signed_in(await _user())
+
+    response = await client.post(LOGOUT, headers=_cookie(token))
+
+    assert response.status_code == 204
+    assert response.content == b""
+    assert await get_redis().exists(_session_key(token)) == 0
+
+
+async def test_logout_deletes_the_cookie(client: httpx.AsyncClient) -> None:
+    token = await _signed_in(await _user())
+
+    response = await client.post(LOGOUT, headers=_cookie(token))
+
+    _assert_deletes_session_cookie(response, secure=False)
+
+
+@pytest.fixture
+def secure_cookie(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+    monkeypatch.setenv("SESSION__COOKIE_NAME", "__Host-session")
+    monkeypatch.setenv("SESSION__COOKIE_SECURE", "true")
+    get_settings.cache_clear()
+
+    yield
+
+    get_settings.cache_clear()
+
+
+async def test_logout_deletes_a_secure_cookie_with_matching_attributes(
+    client: httpx.AsyncClient, secure_cookie: None
+) -> None:
+    token = await _signed_in(await _user())
+
+    response = await client.post(LOGOUT, headers=_cookie(token))
+
+    assert response.status_code == 204
+    _assert_deletes_session_cookie(response, secure=True)
+
+
+async def test_old_cookie_is_useless_after_logout(client: httpx.AsyncClient) -> None:
+    token = await _signed_in(await _user())
+    await client.post(LOGOUT, headers=_cookie(token))
+
+    response = await client.get(ME, headers=_cookie(token))
+
+    assert response.status_code == 401
+
+
+@pytest.mark.parametrize(
+    "token", [None, "garbage", "A" * 43], ids=["no-cookie", "malformed", "unknown"]
+)
+async def test_logout_without_live_session_still_clears_cookie(
+    client: httpx.AsyncClient, token: str | None
+) -> None:
+    response = await client.post(LOGOUT, headers=_cookie(token) if token else {})
+
+    assert response.status_code == 204
+    _assert_deletes_session_cookie(response, secure=False)
+
+
+async def test_repeated_logout_is_harmless(client: httpx.AsyncClient) -> None:
+    token = await _signed_in(await _user())
+    await client.post(LOGOUT, headers=_cookie(token))
+
+    response = await client.post(LOGOUT, headers=_cookie(token))
+
+    assert response.status_code == 204
+
+
+async def test_logout_with_redis_down_is_503_and_keeps_cookie(
+    app: FastAPI, client: httpx.AsyncClient, dead_redis: Redis
+) -> None:
+    app.dependency_overrides[get_session_store] = lambda: _store(dead_redis)
+
+    response = await client.post(LOGOUT, headers=_cookie("A" * 43))
+
+    assert response.status_code == 503
+    assert response.headers.get_list("set-cookie") == []
+
+
+async def test_logout_is_post_only(client: httpx.AsyncClient) -> None:
+    response = await client.get(LOGOUT)
+
+    assert response.status_code == 405
+
+
+def _access_records(records: list[Any]) -> list[Any]:
+    return [record for record in records if record["event"] == "http.requested"]
+
+
+async def test_access_log_names_the_authenticated_user(client: httpx.AsyncClient) -> None:
+    user = await _user()
+    token = await _signed_in(user)
+
+    with structlog.testing.capture_logs() as records:
+        await client.get(ME, headers=_cookie(token))
+
+    [access] = _access_records(records)
+    rendered = json.loads(JSONRenderer()(None, "", dict(access)))
+    assert rendered["user_id"] == str(user.id)
+
+
+@pytest.mark.parametrize("path", ["/healthz", ME], ids=["anonymous-probe", "rejected-me"])
+async def test_access_log_has_no_user_for_anonymous_requests(
+    client: httpx.AsyncClient, path: str
+) -> None:
+    with structlog.testing.capture_logs() as records:
+        await client.get(path)
+
+    [access] = _access_records(records)
+    assert access.get("user_id") is None
+
+
+async def test_every_request_still_gets_an_access_record(client: httpx.AsyncClient) -> None:
+    with structlog.testing.capture_logs() as records:
+        response = await client.get("/healthz")
+
+    assert response.status_code == 200
+    assert len(_access_records(records)) == 1
+
+
+async def test_session_secrets_never_reach_the_logs(
+    app: FastAPI,
+    client: httpx.AsyncClient,
+    dead_redis: Redis,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    caplog.set_level(logging.DEBUG)
+    token = await _signed_in(await _user())
+
+    with structlog.testing.capture_logs() as records:
+        await client.get(ME, headers=_cookie(token))
+        await client.post(LOGOUT, headers=_cookie(token))
+        app.dependency_overrides[get_session_store] = lambda: _store(dead_redis)
+        await client.get(ME, headers=_cookie(token))
+
+    everything = repr(records) + caplog.text
+    assert token not in everything
+    assert sha256(token.encode()).hexdigest() not in everything
+
+
+async def test_redis_outage_is_logged_once_with_cause_and_request_id(
+    app: FastAPI, client: httpx.AsyncClient, dead_redis: Redis
+) -> None:
+    app.dependency_overrides[get_session_store] = lambda: _store(dead_redis)
+
+    with structlog.testing.capture_logs(
+        processors=[structlog.contextvars.merge_contextvars]
+    ) as records:
+        response = await client.get(ME, headers=_cookie("A" * 43))
+
+    errors = [record for record in records if record["event"] == "app.request_error"]
+    assert len(errors) == 1
+    assert errors[0]["status_code"] == 503
+    assert errors[0]["exc_info"].__cause__ is not None
+    assert errors[0]["request_id"] == response.headers["x-request-id"]
