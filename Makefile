@@ -13,7 +13,7 @@ migrate:
 run:
 	uv run --directory backend uvicorn app.main:app --host 127.0.0.1 --port $(APP_PORT)
 test:
-	uv run --directory backend pytest -q tests
+	uv run --directory backend pytest -q tests --cov
 lint:
 	uv run --directory backend ruff check .
 	uv run --directory backend ruff format --check

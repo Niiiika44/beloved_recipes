@@ -5,6 +5,9 @@
 .pytest_cache/
 .ruff_cache/
 .mypy_cache/
+.coverage
+.coverage.*
+htmlcov/
 node_modules/
 data/
 .DS_Store
