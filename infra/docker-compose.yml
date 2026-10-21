@@ -28,7 +28,7 @@ services:
       start_interval: 1s
 
   redis:
-    image: redis:7-alpine@sha256:ff02b58f971e7d7d156a1267e283fcbbeee91773b6aa36c49dac28ecfe28eadf
+    image: redis:7-alpine@sha256:858f009f9709ce576febc734aa78b8f6d624b82571f9ddb6bda4377c833b3499
     restart: unless-stopped
     logging: *default-logging
     environment:
@@ -68,7 +68,7 @@ services:
       start_interval: 1s
 
   neo4j:
-    image: neo4j:5-community-ubi10@sha256:339ff031ad59f167b614b6d4d67e51cd3dc9748413466ae976d23ccc11c679d5
+    image: neo4j:5-community-ubi10@sha256:e94e5440ea760e2f96457fa90224c26771d4d0c5cd65bf9e1da6aa812db2f776
     restart: unless-stopped
     logging: *default-logging
     environment:
