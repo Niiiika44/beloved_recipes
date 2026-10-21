@@ -141,3 +141,22 @@ async def test_cleanup_failure_does_not_block_other_resources(
 
     assert closed == ["redis"]
     assert [record["event"] for record in records] == ["app.dispose_engine_unavailable"]
+
+
+@pytest.mark.usefixtures("quiet_logging")
+async def test_redis_close_failure_is_logged_and_not_raised(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def failing_close() -> None:
+        raise RuntimeError("redis is gone")
+
+    monkeypatch.setattr("app.main.close_redis", failing_close)
+
+    with structlog.testing.capture_logs() as records:
+        async with lifespan(create_app()):
+            get_engine()
+            get_redis()
+
+    assert get_engine.cache_info().currsize == 0
+    assert [record["event"] for record in records] == ["app.redis_close_unavailable"]
+    assert records[0]["error"] == "redis is gone"

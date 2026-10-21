@@ -15,6 +15,7 @@ from app.main import create_app
 
 UNREACHABLE_PORT = "1"
 SHORT_BUDGET = 0.3
+RECOVERY_BUDGET = 30.0
 
 
 class HangingRedis:
@@ -128,14 +129,19 @@ async def test_readyz_reports_both_outages(
 async def test_readyz_recovers_without_restart(
     client: httpx.AsyncClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    monkeypatch.setattr("app.api.health.CHECK_TIMEOUT_SECONDS", RECOVERY_BUDGET)
     real_port = os.environ["REDIS__PORT"]
     await _break(monkeypatch, "REDIS")
-    assert (await client.get("/readyz")).status_code == 503
-
+    outage = await client.get("/readyz")
     monkeypatch.setenv("REDIS__PORT", real_port)
     await _reset_clients()
 
-    assert (await client.get("/readyz")).status_code == 200
+    recovered = await client.get("/readyz")
+
+    assert outage.status_code == 503
+    assert outage.json()["checks"] == {"postgres": "ok", "redis": "fail"}
+    assert recovered.status_code == 200
+    assert recovered.json()["checks"] == {"postgres": "ok", "redis": "ok"}
 
 
 async def test_readyz_hides_failure_details(
