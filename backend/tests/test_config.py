@@ -7,7 +7,7 @@ from pydantic import ValidationError
 
 from app.core.config import Settings, get_settings
 
-SECTIONS = ("APP", "DB", "REDIS", "SECURITY", "SESSION")
+SECTIONS = ("APP", "DB", "REDIS", "SECURITY", "SESSION", "GOOGLE", "MAIL")
 
 REQUIRED_ENV = {
     "DB__USER": "recipes",
@@ -15,6 +15,8 @@ REQUIRED_ENV = {
     "DB__NAME": "recipes",
     "REDIS__PASSWORD": "redis-secret",
     "SECURITY__SECRET_KEY": "s" * 32,
+    "GOOGLE__CLIENT_ID": "123456789012-abc123def456.apps.googleusercontent.com",
+    "GOOGLE__CLIENT_SECRET": "google-secret",
 }
 
 PROD_ENV = {
@@ -22,9 +24,14 @@ PROD_ENV = {
     "SECURITY__SECRET_KEY": "k" * 32,
     "SESSION__COOKIE_NAME": "__Host-session",
     "SESSION__COOKIE_SECURE": "true",
+    "APP__PUBLIC_BASE_URL": "https://recipes.ru",
+    "MAIL__TLS": "tls",
+    "MAIL__SENDER_ADDRESS": "no-reply@recipes.ru",
 }
 
 TRICKY_PASSWORD = "p@ss/wo rd#1:2?3"
+
+ENV_EXAMPLE = Path(__file__).resolve().parents[2] / "infra" / ".env.example"
 
 
 @pytest.fixture(autouse=True)
@@ -48,7 +55,7 @@ def test_missing_required_values_are_reported_together(
         Settings(_env_file=None)
 
     reported = {error["loc"][0] for error in excinfo.value.errors()}
-    assert reported == {"db", "redis", "security"}
+    assert reported == {"db", "redis", "security", "google"}
 
 
 def test_defaults_apply_to_optional_values(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -276,3 +283,240 @@ def test_non_positive_session_durations_are_rejected(
 def test_typo_inside_session_section_is_rejected(monkeypatch: pytest.MonkeyPatch) -> None:
     with pytest.raises(ValidationError):
         _build(monkeypatch, SESSION__COOKIE_NAMEE="sid")
+
+
+def test_public_base_url_defaults_to_local_origin(monkeypatch: pytest.MonkeyPatch) -> None:
+    settings = _build(monkeypatch)
+
+    assert settings.app.public_base_url == "http://localhost:8000"
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ("http://localhost:8000/", "http://localhost:8000"),
+        ("http://localhost:5173", "http://localhost:5173"),
+        ("HTTPS://Recipes.RU:443", "https://recipes.ru"),
+    ],
+)
+def test_public_base_url_is_normalised_to_origin(
+    monkeypatch: pytest.MonkeyPatch, raw: str, expected: str
+) -> None:
+    settings = _build(monkeypatch, APP__PUBLIC_BASE_URL=raw)
+
+    assert settings.app.public_base_url == expected
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        "http://localhost:8000/app",
+        "http://localhost:8000?next=1",
+        "http://localhost:8000#top",
+        "http://user@localhost:8000",
+        "http://:secret@localhost:8000",
+        "localhost:8000",
+        "ftp://localhost:8000",
+    ],
+)
+def test_public_base_url_must_be_an_origin(monkeypatch: pytest.MonkeyPatch, raw: str) -> None:
+    with pytest.raises(ValidationError, match="public_base_url"):
+        _build(monkeypatch, APP__PUBLIC_BASE_URL=raw)
+
+
+def test_prod_rejects_plain_http_public_base_url(monkeypatch: pytest.MonkeyPatch) -> None:
+    with pytest.raises(ValidationError, match="PUBLIC_BASE_URL"):
+        _build(monkeypatch, **(PROD_ENV | {"APP__PUBLIC_BASE_URL": "http://recipes.ru"}))
+
+
+def test_missing_google_client_secret_is_reported_by_name(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("GOOGLE__CLIENT_ID", REQUIRED_ENV["GOOGLE__CLIENT_ID"])
+
+    with pytest.raises(ValidationError) as excinfo:
+        Settings(_env_file=None)
+
+    locations = {error["loc"] for error in excinfo.value.errors()}
+    assert ("google", "client_secret") in locations
+    assert ("google", "client_id") not in locations
+
+
+def test_google_client_id_keeps_google_format(monkeypatch: pytest.MonkeyPatch) -> None:
+    settings = _build(monkeypatch)
+
+    assert settings.google.client_id == REQUIRED_ENV["GOOGLE__CLIENT_ID"]
+
+
+def test_google_client_secret_is_masked_in_repr(monkeypatch: pytest.MonkeyPatch) -> None:
+    settings = _build(monkeypatch, GOOGLE__CLIENT_SECRET="hunter2")
+
+    assert "hunter2" not in repr(settings)
+    assert settings.google.client_secret.get_secret_value() == "hunter2"
+
+
+def test_typo_inside_google_section_is_rejected(monkeypatch: pytest.MonkeyPatch) -> None:
+    with pytest.raises(ValidationError):
+        _build(monkeypatch, GOOGLE__CLIENT_IDD="x")
+
+
+def test_mail_section_defaults_target_local_mailpit(monkeypatch: pytest.MonkeyPatch) -> None:
+    settings = _build(monkeypatch)
+
+    assert settings.mail.host == "127.0.0.1"
+    assert settings.mail.port == 1025
+    assert settings.mail.tls == "none"
+    assert settings.mail.username is None
+    assert settings.mail.password is None
+    assert settings.mail.sender_name == "Beloved Recipes"
+    assert settings.mail.sender_address == "no-reply@example.com"
+
+
+def test_mail_credentials_are_accepted_together(monkeypatch: pytest.MonkeyPatch) -> None:
+    settings = _build(monkeypatch, MAIL__USERNAME="mailer", MAIL__PASSWORD="hunter2")
+
+    assert settings.mail.username == "mailer"
+    assert settings.mail.password is not None
+    assert settings.mail.password.get_secret_value() == "hunter2"
+    assert "hunter2" not in repr(settings)
+
+
+def test_mail_password_without_username_is_rejected(monkeypatch: pytest.MonkeyPatch) -> None:
+    with pytest.raises(ValidationError, match="MAIL__USERNAME"):
+        _build(monkeypatch, MAIL__PASSWORD="hunter2")
+
+
+def test_mail_username_without_password_is_rejected(monkeypatch: pytest.MonkeyPatch) -> None:
+    with pytest.raises(ValidationError, match="MAIL__PASSWORD"):
+        _build(monkeypatch, MAIL__USERNAME="mailer")
+
+
+def test_empty_mail_credentials_count_as_unset(monkeypatch: pytest.MonkeyPatch) -> None:
+    settings = _build(monkeypatch, MAIL__USERNAME="", MAIL__PASSWORD="")
+
+    assert settings.mail.username is None
+    assert settings.mail.password is None
+
+
+def test_empty_lines_in_env_file_count_as_unset(tmp_path: Path) -> None:
+    env_file = tmp_path / ".env"
+    lines = [f"{key}={value}" for key, value in REQUIRED_ENV.items()]
+    lines += ["MAIL__USERNAME=", "MAIL__PASSWORD="]
+    env_file.write_text("\n".join(lines), encoding="utf-8")
+
+    settings = Settings(_env_file=env_file)
+
+    assert settings.mail.username is None
+    assert settings.mail.password is None
+
+
+def test_empty_secret_key_is_reported_as_missing(monkeypatch: pytest.MonkeyPatch) -> None:
+    with pytest.raises(ValidationError) as excinfo:
+        _build(monkeypatch, SECURITY__SECRET_KEY="")
+
+    assert {error["loc"] for error in excinfo.value.errors()} == {("security",)}
+
+
+def test_unknown_mail_tls_mode_is_rejected(monkeypatch: pytest.MonkeyPatch) -> None:
+    with pytest.raises(ValidationError, match="tls"):
+        _build(monkeypatch, MAIL__TLS="starttls")
+
+
+def test_typo_inside_mail_section_is_rejected(monkeypatch: pytest.MonkeyPatch) -> None:
+    with pytest.raises(ValidationError):
+        _build(monkeypatch, MAIL__HOSTT="smtp.recipes.ru")
+
+
+@pytest.mark.parametrize(
+    "address",
+    [
+        "no-reply",
+        "no reply@recipes.ru",
+        "no-reply@@recipes.ru",
+        "a@b@recipes.ru",
+        "no-reply@recipes.ru\r\nBcc: victim@recipes.ru",
+        "no-reply@localhost",
+        "no-reply@mailpit.test",
+    ],
+)
+def test_invalid_sender_address_is_rejected(monkeypatch: pytest.MonkeyPatch, address: str) -> None:
+    with pytest.raises(ValidationError, match="sender_address"):
+        _build(monkeypatch, MAIL__SENDER_ADDRESS=address)
+
+
+def test_sender_address_domain_is_normalised(monkeypatch: pytest.MonkeyPatch) -> None:
+    settings = _build(monkeypatch, MAIL__SENDER_ADDRESS="no-reply@Recipes.RU")
+
+    assert settings.mail.sender_address == "no-reply@recipes.ru"
+
+
+def test_sender_name_is_stripped(monkeypatch: pytest.MonkeyPatch) -> None:
+    settings = _build(monkeypatch, MAIL__SENDER_NAME="  Любимые рецепты  ")
+
+    assert settings.mail.sender_name == "Любимые рецепты"
+
+
+def test_sender_name_of_maximum_length_is_accepted(monkeypatch: pytest.MonkeyPatch) -> None:
+    settings = _build(monkeypatch, MAIL__SENDER_NAME="р" * 100)
+
+    assert settings.mail.sender_name == "р" * 100
+
+
+@pytest.mark.parametrize(
+    "name",
+    ["   ", "р" * 101, "Bad\nName", "Bad\rName", "Bad\tName", "Zero​Width"],
+)
+def test_invalid_sender_name_is_rejected(monkeypatch: pytest.MonkeyPatch, name: str) -> None:
+    with pytest.raises(ValidationError, match="sender_name"):
+        _build(monkeypatch, MAIL__SENDER_NAME=name)
+
+
+def test_prod_rejects_unencrypted_mail(monkeypatch: pytest.MonkeyPatch) -> None:
+    with pytest.raises(ValidationError, match="MAIL__TLS"):
+        _build(monkeypatch, **(PROD_ENV | {"MAIL__TLS": "none"}))
+
+
+@pytest.mark.parametrize(
+    "address",
+    [
+        "no-reply@example.com",
+        "no-reply@EXAMPLE.COM",
+        "no-reply@example.net",
+        "no-reply@mail.example.org",
+        "no-reply@recipes.example",
+    ],
+)
+def test_prod_rejects_reserved_example_sender_domain(
+    monkeypatch: pytest.MonkeyPatch, address: str
+) -> None:
+    with pytest.raises(ValidationError, match="MAIL__SENDER_ADDRESS"):
+        _build(monkeypatch, **(PROD_ENV | {"MAIL__SENDER_ADDRESS": address}))
+
+
+@pytest.mark.parametrize(
+    "address",
+    [
+        "no-reply@myexample.ru",
+        "no-reply@notexample.com",
+        "no-reply@example-recipes.com",
+        "no-reply@example.com.ru",
+        "no-reply@example.co",
+        "example@recipes.ru",
+    ],
+)
+def test_prod_accepts_sender_domain_that_only_resembles_example(
+    monkeypatch: pytest.MonkeyPatch, address: str
+) -> None:
+    settings = _build(monkeypatch, **(PROD_ENV | {"MAIL__SENDER_ADDRESS": address}))
+
+    assert settings.mail.sender_address == address
+
+
+def test_env_example_yields_working_local_settings() -> None:
+    settings = Settings(_env_file=ENV_EXAMPLE)
+
+    assert settings.app.env == "local"
+    assert settings.app.public_base_url == "http://localhost:8000"
+    assert settings.mail.tls == "none"
+    assert settings.mail.username is None
+    assert settings.mail.password is None

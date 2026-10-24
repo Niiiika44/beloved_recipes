@@ -13,6 +13,9 @@ from app.core.config import get_settings
 REDIS_TEST_PASSWORD = "test-redis-password"
 ALEMBIC_INI = Path(__file__).resolve().parents[1] / "alembic.ini"
 
+os.environ.setdefault("GOOGLE__CLIENT_ID", "test-client-id.apps.googleusercontent.com")
+os.environ.setdefault("GOOGLE__CLIENT_SECRET", "test-google-client-secret")
+
 
 def _override_env(overrides: Mapping[str, str]) -> Iterator[None]:
     saved = {key: os.environ.get(key) for key in overrides}

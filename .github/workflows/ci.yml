@@ -16,6 +16,8 @@ env:
   DB__PORT: 5432
   REDIS__PASSWORD: ci-not-a-secret
   REDIS__PORT: 6379
+  GOOGLE__CLIENT_ID: ci-not-a-secret
+  GOOGLE__CLIENT_SECRET: ci-not-a-secret
 
 on:
   push:

@@ -59,6 +59,9 @@ async def test_docs_are_hidden_in_prod(monkeypatch: pytest.MonkeyPatch, path: st
     monkeypatch.setenv("SECURITY__SECRET_KEY", PROD_SECRET)
     monkeypatch.setenv("SESSION__COOKIE_NAME", "__Host-session")
     monkeypatch.setenv("SESSION__COOKIE_SECURE", "true")
+    monkeypatch.setenv("APP__PUBLIC_BASE_URL", "https://recipes.ru")
+    monkeypatch.setenv("MAIL__TLS", "tls")
+    monkeypatch.setenv("MAIL__SENDER_ADDRESS", "no-reply@recipes.ru")
     get_settings.cache_clear()
 
     assert (await _get(path)).status_code == 404
