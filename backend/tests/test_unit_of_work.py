@@ -43,7 +43,6 @@ async def user_id(factory: async_sessionmaker[AsyncSession]) -> uuid.UUID:
     async with factory() as session:
         user = User(
             email=f"cook-{suffix}@example.com",
-            google_sub=f"sub-{suffix}",
             display_name=f"Cook {suffix}",
         )
         session.add(user)

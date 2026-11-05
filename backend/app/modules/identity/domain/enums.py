@@ -14,3 +14,9 @@ class WorkspaceRole(StrEnum):
 
     OWNER = "owner"
     MEMBER = "member"
+
+
+class IdentityProvider(StrEnum):
+    """Methods of identity verification"""
+
+    GOOGLE = "google"

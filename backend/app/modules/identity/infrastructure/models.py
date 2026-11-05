@@ -1,11 +1,21 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import BigInteger, DateTime, Enum, ForeignKey, Index, LargeBinary, String, func
+from sqlalchemy import (
+    BigInteger,
+    DateTime,
+    Enum,
+    ForeignKey,
+    Index,
+    LargeBinary,
+    String,
+    UniqueConstraint,
+    func,
+)
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.models import Base, IdMixin, TimestampMixin
-from app.modules.identity.domain.enums import WorkspaceRole, WorkspaceTheme
+from app.modules.identity.domain.enums import IdentityProvider, WorkspaceRole, WorkspaceTheme
 
 
 class User(IdMixin, TimestampMixin, Base):
@@ -14,12 +24,37 @@ class User(IdMixin, TimestampMixin, Base):
     __tablename__ = "users"
 
     email: Mapped[str] = mapped_column(nullable=False)
-    google_sub: Mapped[str] = mapped_column(nullable=False, unique=True)
     display_name: Mapped[str] = mapped_column(nullable=False)
     avatar_url: Mapped[str | None]
     telegram_chat_id: Mapped[int | None] = mapped_column(BigInteger, unique=True)
+    email_verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     __table_args__ = (Index("users_email_lower_idx", func.lower(email), unique=True),)
+
+
+class UserIdentity(IdMixin, TimestampMixin, Base):
+    """Model of user identity verification"""
+
+    __tablename__ = "user_identities"
+
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    provider: Mapped[IdentityProvider] = mapped_column(
+        Enum(
+            IdentityProvider,
+            name="identity_provider",
+            values_callable=lambda e: [m.value for m in e],
+        ),
+        nullable=False,
+    )
+    subject: Mapped[str] = mapped_column(nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint("provider", "subject", name="user_identities_provider_subject_key"),
+        UniqueConstraint("user_id", "provider", name="user_identities_user_id_provider_key"),
+    )
 
 
 class Workspace(IdMixin, TimestampMixin, Base):

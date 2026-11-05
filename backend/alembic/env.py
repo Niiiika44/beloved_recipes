@@ -1,11 +1,15 @@
 import asyncio
 from logging.config import fileConfig
+from typing import Any
 
 from sqlalchemy import MetaData, pool
 from sqlalchemy.engine import Connection
 from sqlalchemy.ext.asyncio import async_engine_from_config
 
 from alembic import context
+from alembic.operations.ops import MigrationScript
+from alembic.runtime.migration import MigrationContext
+from alembic.script import ScriptDirectory
 from app.core.config import get_settings
 from app.core.models import Base
 import app.modules.identity.infrastructure.models  # noqa: F401
@@ -19,6 +23,18 @@ if config.config_file_name is not None:
     fileConfig(config.config_file_name, disable_existing_loggers=False)
 
 target_metadata: MetaData = Base.metadata
+
+
+def assign_sequential_revision_id(
+    migration_context: MigrationContext,
+    revision: Any,
+    directives: list[MigrationScript],
+) -> None:
+    """Number new revisions 0001, 0002, ... instead of random hashes."""
+    head = ScriptDirectory.from_config(config).get_current_head()
+    next_number = int(head) + 1 if head is not None else 1
+    for directive in directives:
+        directive.rev_id = f"{next_number:04d}"
 
 
 def run_migrations_offline() -> None:
@@ -53,6 +69,7 @@ def do_run_migrations(connection: Connection) -> None:
         target_metadata=target_metadata,
         compare_type=True,
         compare_server_default=True,
+        process_revision_directives=assign_sequential_revision_id,
     )
 
     with context.begin_transaction():

@@ -123,7 +123,6 @@ async def _user(**overrides: Any) -> User:
     suffix = uuid.uuid4().hex[:8]
     values: dict[str, Any] = {
         "email": f"cook-{suffix}@example.com",
-        "google_sub": f"sub-{suffix}",
         "display_name": f"Cook {suffix}",
         "avatar_url": None,
     }

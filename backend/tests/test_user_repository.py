@@ -27,7 +27,6 @@ async def _user(session: AsyncSession, **overrides: Any) -> User:
     suffix = uuid.uuid4().hex[:8]
     values: dict[str, Any] = {
         "email": f"cook-{suffix}@example.com",
-        "google_sub": f"sub-{suffix}",
         "display_name": f"Cook {suffix}",
         "avatar_url": f"https://example.com/{suffix}.png",
     }
