@@ -68,7 +68,7 @@ services:
       start_interval: 1s
 
   neo4j:
-    image: neo4j:5-community-ubi10@sha256:e94e5440ea760e2f96457fa90224c26771d4d0c5cd65bf9e1da6aa812db2f776
+    image: neo4j:5-community-ubi10@sha256:8395b4579a23fa1c17b0f54dc477a222de27459ead2273f0efd43e749e4752b0
     restart: unless-stopped
     logging: *default-logging
     environment:
