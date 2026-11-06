@@ -22,8 +22,16 @@ from app.core.models import Base
 
 ALEMBIC_INI = Path(__file__).resolve().parents[1] / "alembic.ini"
 ALEMBIC_DIR = ALEMBIC_INI.parent / "alembic"
-EXPECTED_TABLES = {"users", "workspaces", "memberships", "invites", "user_identities"}
+EXPECTED_TABLES = {
+    "users",
+    "workspaces",
+    "memberships",
+    "invites",
+    "user_identities",
+    "released_nicknames",
+}
 REVISION_BEFORE_IDENTITIES = "0001"
+REVISION_BEFORE_NICKNAMES = "0002"
 
 
 def _config() -> Config:
@@ -105,6 +113,20 @@ async def _new_user_before_identities(connection: AsyncConnection, email: str, s
             " VALUES (:id, :email, :sub, :name)"
         ),
         {"id": uuid.uuid7(), "email": email, "sub": sub, "name": "кто-то"},
+    )
+
+
+async def _set_nickname(connection: AsyncConnection, user_id: uuid.UUID, nickname: str) -> None:
+    await connection.execute(
+        text("UPDATE users SET nickname = :nickname WHERE id = :id"),
+        {"nickname": nickname, "id": user_id},
+    )
+
+
+async def _quarantine(connection: AsyncConnection, nickname: str, user_id: uuid.UUID) -> None:
+    await connection.execute(
+        text("INSERT INTO released_nicknames (nickname, released_by) VALUES (:nickname, :user)"),
+        {"nickname": nickname, "user": user_id},
     )
 
 
@@ -458,6 +480,123 @@ async def test_downgrade_refuses_user_without_google_identity() -> None:
         assert version.scalar_one() == ScriptDirectory.from_config(_config()).get_current_head()
         assert users.scalar_one() == 2
         assert identities.scalar_one() == 1
+
+
+async def test_users_without_nickname_coexist() -> None:
+    factory = get_session_factory()
+    async with factory() as session:
+        connection = await session.connection()
+        await _new_user(connection, "first@example.com")
+        await _new_user(connection, "second@example.com")
+
+        count = await connection.execute(text("SELECT count(*) FROM users WHERE nickname IS NULL"))
+        assert count.scalar_one() == 2
+        await session.rollback()
+
+
+async def test_nickname_is_unique() -> None:
+    async with get_engine().begin() as connection:
+        first = await _new_user(connection, "first@example.com")
+        second = await _new_user(connection, "second@example.com")
+        await _set_nickname(connection, first, "chef.anna")
+
+        with pytest.raises(IntegrityError, match="users_nickname_key"):
+            await _set_nickname(connection, second, "chef.anna")
+
+
+async def test_user_nickname_must_be_lowercase() -> None:
+    async with get_engine().begin() as connection:
+        user_id = await _new_user(connection, "upper@example.com")
+
+        with pytest.raises(IntegrityError, match="users_nickname_lowercase_check"):
+            await _set_nickname(connection, user_id, "Chef.Anna")
+
+
+async def test_quarantined_nickname_must_be_lowercase() -> None:
+    async with get_engine().begin() as connection:
+        user_id = await _new_user(connection, "upper@example.com")
+
+        with pytest.raises(IntegrityError, match="released_nicknames_nickname_lowercase_check"):
+            await _quarantine(connection, "Chef.Anna", user_id)
+
+
+async def test_nickname_is_quarantined_once() -> None:
+    async with get_engine().begin() as connection:
+        first = await _new_user(connection, "first@example.com")
+        second = await _new_user(connection, "second@example.com")
+        await _quarantine(connection, "chef.anna", first)
+
+        with pytest.raises(IntegrityError, match="released_nicknames_pkey"):
+            await _quarantine(connection, "chef.anna", second)
+
+
+async def test_quarantine_records_release_time() -> None:
+    factory = get_session_factory()
+    async with factory() as session:
+        connection = await session.connection()
+        user_id = await _new_user(connection, "released@example.com")
+        await _quarantine(connection, "chef.anna", user_id)
+
+        released = await connection.execute(
+            text("SELECT released_at = now() FROM released_nicknames WHERE nickname = 'chef.anna'")
+        )
+        assert released.scalar_one() is True
+        await session.rollback()
+
+
+async def test_quarantine_outlives_deleted_user() -> None:
+    factory = get_session_factory()
+    async with factory() as session:
+        connection = await session.connection()
+        user_id = await _new_user(connection, "leaving@example.com")
+        await _quarantine(connection, "chef.anna", user_id)
+
+        await connection.execute(text("DELETE FROM users WHERE id = :id"), {"id": user_id})
+
+        row = await connection.execute(
+            text("SELECT released_by FROM released_nicknames WHERE nickname = 'chef.anna'")
+        )
+        assert row.scalar_one() is None
+        await session.rollback()
+
+
+async def test_released_nickname_constraint_names_follow_convention() -> None:
+    async with get_engine().connect() as connection:
+        constraints = await connection.execute(
+            text("""
+                SELECT conname FROM pg_constraint
+                WHERE conrelid = 'released_nicknames'::regclass AND contype IN ('p', 'f', 'u', 'c')
+            """)
+        )
+        indexes = await connection.execute(
+            text("SELECT indexname FROM pg_indexes WHERE tablename = 'released_nicknames'")
+        )
+        constraint_names = {row[0] for row in constraints}
+        index_names = {row[0] for row in indexes}
+
+    assert constraint_names == {
+        "released_nicknames_pkey",
+        "released_nicknames_released_by_fkey",
+        "released_nicknames_nickname_lowercase_check",
+    }
+    assert "released_nicknames_released_by_idx" in index_names
+
+
+@pytest.mark.usefixtures("_restores_head")
+async def test_downgrade_before_nicknames_removes_them() -> None:
+    await _migrate(command.downgrade, REVISION_BEFORE_NICKNAMES)
+
+    async with get_engine().connect() as connection:
+        columns = await _users_columns(connection)
+        tables = await _tables(connection)
+        constraints = await connection.execute(
+            text("SELECT conname FROM pg_constraint WHERE conname LIKE 'users_nickname%'")
+        )
+        leftover = [row[0] for row in constraints]
+
+    assert "nickname" not in columns
+    assert "released_nicknames" not in tables
+    assert leftover == []
 
 
 def test_revisions_are_numbered_in_sequence() -> None:
