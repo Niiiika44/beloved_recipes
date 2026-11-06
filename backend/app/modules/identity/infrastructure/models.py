@@ -3,6 +3,7 @@ from datetime import datetime
 
 from sqlalchemy import (
     BigInteger,
+    CheckConstraint,
     DateTime,
     Enum,
     ForeignKey,
@@ -24,12 +25,32 @@ class User(IdMixin, TimestampMixin, Base):
     __tablename__ = "users"
 
     email: Mapped[str] = mapped_column(nullable=False)
+    nickname: Mapped[str | None] = mapped_column(unique=True)
     display_name: Mapped[str] = mapped_column(nullable=False)
     avatar_url: Mapped[str | None]
     telegram_chat_id: Mapped[int | None] = mapped_column(BigInteger, unique=True)
     email_verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
-    __table_args__ = (Index("users_email_lower_idx", func.lower(email), unique=True),)
+    __table_args__ = (
+        Index("users_email_lower_idx", func.lower(email), unique=True),
+        CheckConstraint("nickname = lower(nickname)", name="nickname_lowercase"),
+    )
+
+
+class ReleasedNickname(Base):
+    """Quarantine model for used nicknames"""
+
+    __tablename__ = "released_nicknames"
+
+    nickname: Mapped[str] = mapped_column(primary_key=True)
+    released_by: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), index=True
+    )
+    released_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+    __table_args__ = (CheckConstraint("nickname = lower(nickname)", name="nickname_lowercase"),)
 
 
 class UserIdentity(IdMixin, TimestampMixin, Base):
