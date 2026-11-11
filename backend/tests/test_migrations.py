@@ -29,9 +29,12 @@ EXPECTED_TABLES = {
     "invites",
     "user_identities",
     "released_nicknames",
+    "password_credentials",
 }
 REVISION_BEFORE_IDENTITIES = "0001"
 REVISION_BEFORE_NICKNAMES = "0002"
+REVISION_BEFORE_PASSWORDS = "0003"
+PASSWORD_HASH = "$argon2id$v=19$m=65536,t=3,p=4$c2FsdHNhbHQ$aGFzaGhhc2hoYXNo"
 
 
 def _config() -> Config:
@@ -127,6 +130,13 @@ async def _quarantine(connection: AsyncConnection, nickname: str, user_id: uuid.
     await connection.execute(
         text("INSERT INTO released_nicknames (nickname, released_by) VALUES (:nickname, :user)"),
         {"nickname": nickname, "user": user_id},
+    )
+
+
+async def _set_password(connection: AsyncConnection, user_id: uuid.UUID) -> None:
+    await connection.execute(
+        text("INSERT INTO password_credentials (user_id, password_hash) VALUES (:user, :hash)"),
+        {"user": user_id, "hash": PASSWORD_HASH},
     )
 
 
@@ -597,6 +607,99 @@ async def test_downgrade_before_nicknames_removes_them() -> None:
     assert "nickname" not in columns
     assert "released_nicknames" not in tables
     assert leftover == []
+
+
+async def test_user_has_at_most_one_password() -> None:
+    async with get_engine().begin() as connection:
+        user_id = await _new_user(connection, "twice@example.com")
+        await _set_password(connection, user_id)
+
+        with pytest.raises(IntegrityError, match="password_credentials_pkey"):
+            await _set_password(connection, user_id)
+
+
+async def test_password_requires_existing_user() -> None:
+    async with get_engine().begin() as connection:
+        with pytest.raises(IntegrityError, match="password_credentials_user_id_fkey"):
+            await _set_password(connection, uuid.uuid7())
+
+
+async def test_deleting_user_removes_password() -> None:
+    factory = get_session_factory()
+    async with factory() as session:
+        connection = await session.connection()
+        user_id = await _new_user(connection, "leaving@example.com")
+        await _set_password(connection, user_id)
+
+        await connection.execute(text("DELETE FROM users WHERE id = :id"), {"id": user_id})
+
+        left = await connection.execute(
+            text("SELECT count(*) FROM password_credentials WHERE user_id = :id"), {"id": user_id}
+        )
+        assert left.scalar_one() == 0
+        await session.rollback()
+
+
+async def test_password_timestamps_are_set_by_database() -> None:
+    factory = get_session_factory()
+    async with factory() as session:
+        connection = await session.connection()
+        user_id = await _new_user(connection, "stamped@example.com")
+        await _set_password(connection, user_id)
+
+        row = await connection.execute(
+            text(
+                "SELECT created_at = now() AND updated_at = now()"
+                " FROM password_credentials WHERE user_id = :id"
+            ),
+            {"id": user_id},
+        )
+        assert row.scalar_one() is True
+        await session.rollback()
+
+
+async def test_password_constraint_names_follow_convention() -> None:
+    async with get_engine().connect() as connection:
+        rows = await connection.execute(
+            text("""
+                SELECT conname FROM pg_constraint
+                WHERE conrelid = 'password_credentials'::regclass
+                  AND contype IN ('p', 'f', 'u', 'c')
+            """)
+        )
+
+    assert {row[0] for row in rows} == {
+        "password_credentials_pkey",
+        "password_credentials_user_id_fkey",
+    }
+
+
+@pytest.mark.usefixtures("_restores_head")
+async def test_downgrade_before_passwords_removes_table() -> None:
+    await _migrate(command.downgrade, REVISION_BEFORE_PASSWORDS)
+
+    async with get_engine().connect() as connection:
+        tables = await _tables(connection)
+
+    assert "password_credentials" not in tables
+
+
+@pytest.mark.usefixtures("_restores_head")
+async def test_downgrade_refuses_while_passwords_exist() -> None:
+    async with get_engine().begin() as connection:
+        user_id = await _new_user(connection, "password@example.com")
+        await _set_password(connection, user_id)
+
+    with pytest.raises(RuntimeError, match="1 users have passwords"):
+        await _migrate(command.downgrade, REVISION_BEFORE_PASSWORDS)
+
+    get_engine.cache_clear()
+    get_session_factory.cache_clear()
+    async with get_engine().connect() as connection:
+        version = await connection.execute(text("SELECT version_num FROM alembic_version"))
+        stored = await connection.execute(text("SELECT password_hash FROM password_credentials"))
+        assert version.scalar_one() == ScriptDirectory.from_config(_config()).get_current_head()
+        assert stored.scalar_one() == PASSWORD_HASH
 
 
 def test_revisions_are_numbered_in_sequence() -> None:

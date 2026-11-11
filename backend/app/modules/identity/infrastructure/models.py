@@ -37,6 +37,18 @@ class User(IdMixin, TimestampMixin, Base):
     )
 
 
+class PasswordCredential(TimestampMixin, Base):
+    """Model of user's passwords (hash)"""
+
+    __tablename__ = "password_credentials"
+
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    password_hash: Mapped[str] = mapped_column(nullable=False)
+
+
 class ReleasedNickname(Base):
     """Quarantine model for used nicknames"""
 
