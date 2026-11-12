@@ -12,11 +12,18 @@ from sqlalchemy import (
     String,
     UniqueConstraint,
     func,
+    text,
 )
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.models import Base, IdMixin, TimestampMixin
-from app.modules.identity.domain.enums import IdentityProvider, WorkspaceRole, WorkspaceTheme
+from app.modules.identity.domain.enums import (
+    EmailJobStatus,
+    EmailPurpose,
+    IdentityProvider,
+    WorkspaceRole,
+    WorkspaceTheme,
+)
 
 
 class User(IdMixin, TimestampMixin, Base):
@@ -24,15 +31,15 @@ class User(IdMixin, TimestampMixin, Base):
 
     __tablename__ = "users"
 
-    email: Mapped[str] = mapped_column(nullable=False)
+    email: Mapped[str]
     nickname: Mapped[str | None] = mapped_column(unique=True)
-    display_name: Mapped[str] = mapped_column(nullable=False)
+    display_name: Mapped[str]
     avatar_url: Mapped[str | None]
     telegram_chat_id: Mapped[int | None] = mapped_column(BigInteger, unique=True)
     email_verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     __table_args__ = (
-        Index("users_email_lower_idx", func.lower(email), unique=True),
+        Index("users_email_lower_idx", func.lower("email"), unique=True),
         CheckConstraint("nickname = lower(nickname)", name="nickname_lowercase"),
     )
 
@@ -46,7 +53,7 @@ class PasswordCredential(TimestampMixin, Base):
         ForeignKey("users.id", ondelete="CASCADE"),
         primary_key=True,
     )
-    password_hash: Mapped[str] = mapped_column(nullable=False)
+    password_hash: Mapped[str]
 
 
 class ReleasedNickname(Base):
@@ -72,7 +79,6 @@ class UserIdentity(IdMixin, TimestampMixin, Base):
 
     user_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey("users.id", ondelete="CASCADE"),
-        nullable=False,
     )
     provider: Mapped[IdentityProvider] = mapped_column(
         Enum(
@@ -80,9 +86,8 @@ class UserIdentity(IdMixin, TimestampMixin, Base):
             name="identity_provider",
             values_callable=lambda e: [m.value for m in e],
         ),
-        nullable=False,
     )
-    subject: Mapped[str] = mapped_column(nullable=False)
+    subject: Mapped[str]
 
     __table_args__ = (
         UniqueConstraint("provider", "subject", name="user_identities_provider_subject_key"),
@@ -95,12 +100,13 @@ class Workspace(IdMixin, TimestampMixin, Base):
 
     __tablename__ = "workspaces"
 
-    name: Mapped[str] = mapped_column(nullable=False)
+    name: Mapped[str]
     theme: Mapped[str] = mapped_column(
-        String(32), server_default=WorkspaceTheme.LIGHT.value, nullable=False
+        String(32),
+        server_default=WorkspaceTheme.LIGHT.value,
     )
     owner_id: Mapped[uuid.UUID] = mapped_column(
-        ForeignKey("users.id", ondelete="RESTRICT"), nullable=False
+        ForeignKey("users.id", ondelete="RESTRICT"),
     )
 
 
@@ -111,17 +117,14 @@ class Membership(Base):
 
     user_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey("users.id", ondelete="CASCADE"),
-        nullable=False,
         primary_key=True,
     )
     workspace_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey("workspaces.id", ondelete="CASCADE"),
-        nullable=False,
         index=True,
     )
     role: Mapped[WorkspaceRole] = mapped_column(
         Enum(WorkspaceRole, name="workspace_role", values_callable=lambda e: [m.value for m in e]),
-        nullable=False,
     )
     joined_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
@@ -133,15 +136,57 @@ class Invite(IdMixin, TimestampMixin, Base):
 
     workspace_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey("workspaces.id", ondelete="CASCADE"),
-        nullable=False,
         index=True,
     )
-    token_hash: Mapped[bytes] = mapped_column(LargeBinary, nullable=False, unique=True)
+    token_hash: Mapped[bytes] = mapped_column(LargeBinary, unique=True)
     created_by: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("users.id", ondelete="SET NULL")
     )
     email: Mapped[str | None]
-    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     used_by: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
     revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class EmailJob(IdMixin, TimestampMixin, Base):
+    """Queued email sending job"""
+
+    __tablename__ = "email_jobs"
+
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"),
+        index=True,
+    )
+    purpose: Mapped[EmailPurpose] = mapped_column(
+        Enum(EmailPurpose, name="email_purpose", values_callable=lambda e: [m.value for m in e]),
+    )
+    status: Mapped[EmailJobStatus] = mapped_column(
+        Enum(
+            EmailJobStatus, name="email_job_status", values_callable=lambda e: [m.value for m in e]
+        ),
+        default=EmailJobStatus.PENDING.value,
+        server_default=EmailJobStatus.PENDING.value,
+    )
+    attempts: Mapped[int] = mapped_column(default=0, server_default=text("0"))
+    available_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+    )
+    locked_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_error: Mapped[str | None]
+
+    __table_args__ = (
+        Index(
+            "email_jobs_user_id_purpose_pending_key",
+            "user_id",
+            "purpose",
+            unique=True,
+            postgresql_where=text("status = 'pending'"),
+        ),
+        Index(
+            "email_jobs_available_at_pending_idx",
+            "available_at",
+            postgresql_where=text("status = 'pending'"),
+        ),
+    )

@@ -30,10 +30,12 @@ EXPECTED_TABLES = {
     "user_identities",
     "released_nicknames",
     "password_credentials",
+    "email_jobs",
 }
 REVISION_BEFORE_IDENTITIES = "0001"
 REVISION_BEFORE_NICKNAMES = "0002"
 REVISION_BEFORE_PASSWORDS = "0003"
+REVISION_BEFORE_EMAIL_JOBS = "0004"
 PASSWORD_HASH = "$argon2id$v=19$m=65536,t=3,p=4$c2FsdHNhbHQ$aGFzaGhhc2hoYXNo"
 
 
@@ -137,6 +139,23 @@ async def _set_password(connection: AsyncConnection, user_id: uuid.UUID) -> None
     await connection.execute(
         text("INSERT INTO password_credentials (user_id, password_hash) VALUES (:user, :hash)"),
         {"user": user_id, "hash": PASSWORD_HASH},
+    )
+
+
+async def _new_job(
+    connection: AsyncConnection, user_id: uuid.UUID, purpose: str = "password_reset"
+) -> uuid.UUID:
+    identifier = uuid.uuid7()
+    await connection.execute(
+        text("INSERT INTO email_jobs (id, user_id, purpose) VALUES (:id, :user, :purpose)"),
+        {"id": identifier, "user": user_id, "purpose": purpose},
+    )
+    return identifier
+
+
+async def _fail_job(connection: AsyncConnection, job_id: uuid.UUID) -> None:
+    await connection.execute(
+        text("UPDATE email_jobs SET status = 'failed' WHERE id = :id"), {"id": job_id}
     )
 
 
@@ -700,6 +719,188 @@ async def test_downgrade_refuses_while_passwords_exist() -> None:
         stored = await connection.execute(text("SELECT password_hash FROM password_credentials"))
         assert version.scalar_one() == ScriptDirectory.from_config(_config()).get_current_head()
         assert stored.scalar_one() == PASSWORD_HASH
+
+
+async def test_new_email_job_waits_with_defaults() -> None:
+    factory = get_session_factory()
+    async with factory() as session:
+        connection = await session.connection()
+        user_id = await _new_user(connection, "queued@example.com")
+        job_id = await _new_job(connection, user_id)
+
+        row = await connection.execute(
+            text(
+                "SELECT status::text, attempts, available_at = now(), locked_until, last_error"
+                " FROM email_jobs WHERE id = :id"
+            ),
+            {"id": job_id},
+        )
+        assert tuple(row.one()) == ("pending", 0, True, None, None)
+        await session.rollback()
+
+
+async def test_email_enums_store_values_not_member_names() -> None:
+    async with get_engine().connect() as connection:
+        purposes = await connection.execute(text("SELECT unnest(enum_range(NULL::email_purpose))"))
+        purpose_values = [row[0] for row in purposes]
+        statuses = await connection.execute(
+            text("SELECT unnest(enum_range(NULL::email_job_status))")
+        )
+        status_values = [row[0] for row in statuses]
+
+    assert purpose_values == ["email_confirm", "password_reset", "already_registered"]
+    assert status_values == ["pending", "failed"]
+
+
+async def test_one_pending_email_per_user_and_purpose() -> None:
+    async with get_engine().begin() as connection:
+        user_id = await _new_user(connection, "impatient@example.com")
+        await _new_job(connection, user_id)
+
+        with pytest.raises(IntegrityError, match="email_jobs_user_id_purpose_pending_key"):
+            await _new_job(connection, user_id)
+
+
+async def test_pending_emails_of_different_purposes_coexist() -> None:
+    factory = get_session_factory()
+    async with factory() as session:
+        connection = await session.connection()
+        user_id = await _new_user(connection, "busy@example.com")
+        await _new_job(connection, user_id, "email_confirm")
+        await _new_job(connection, user_id, "password_reset")
+
+        count = await connection.execute(
+            text("SELECT count(*) FROM email_jobs WHERE user_id = :id"), {"id": user_id}
+        )
+        assert count.scalar_one() == 2
+        await session.rollback()
+
+
+async def test_failed_email_does_not_block_a_new_one() -> None:
+    factory = get_session_factory()
+    async with factory() as session:
+        connection = await session.connection()
+        user_id = await _new_user(connection, "retry@example.com")
+        failed = await _new_job(connection, user_id)
+        await _fail_job(connection, failed)
+
+        await _new_job(connection, user_id)
+
+        rows = await connection.execute(
+            text("SELECT status::text FROM email_jobs WHERE user_id = :id"), {"id": user_id}
+        )
+        assert sorted(row[0] for row in rows) == ["failed", "pending"]
+        await session.rollback()
+
+
+async def test_enqueue_skips_only_a_pending_duplicate() -> None:
+    factory = get_session_factory()
+    async with factory() as session:
+        connection = await session.connection()
+        user_id = await _new_user(connection, "twice@example.com")
+        enqueue = text(
+            "INSERT INTO email_jobs (id, user_id, purpose) VALUES (:id, :user, 'password_reset')"
+            " ON CONFLICT (user_id, purpose) WHERE status = 'pending' DO NOTHING"
+            " RETURNING id"
+        )
+
+        first = (await connection.execute(enqueue, {"id": uuid.uuid7(), "user": user_id})).all()
+        second = (await connection.execute(enqueue, {"id": uuid.uuid7(), "user": user_id})).all()
+        await _fail_job(connection, first[0].id)
+        third = (await connection.execute(enqueue, {"id": uuid.uuid7(), "user": user_id})).all()
+
+        assert (len(first), len(second), len(third)) == (1, 0, 1)
+        await session.rollback()
+
+
+async def test_deleting_user_removes_all_email_jobs() -> None:
+    factory = get_session_factory()
+    async with factory() as session:
+        connection = await session.connection()
+        user_id = await _new_user(connection, "leaving@example.com")
+        failed = await _new_job(connection, user_id, "email_confirm")
+        await _fail_job(connection, failed)
+        await _new_job(connection, user_id, "password_reset")
+
+        await connection.execute(text("DELETE FROM users WHERE id = :id"), {"id": user_id})
+
+        left = await connection.execute(
+            text("SELECT count(*) FROM email_jobs WHERE user_id = :id"), {"id": user_id}
+        )
+        assert left.scalar_one() == 0
+        await session.rollback()
+
+
+async def test_email_job_requires_existing_user() -> None:
+    async with get_engine().begin() as connection:
+        with pytest.raises(IntegrityError, match="email_jobs_user_id_fkey"):
+            await _new_job(connection, uuid.uuid7())
+
+
+async def test_email_job_indexes_are_named_and_partial() -> None:
+    async with get_engine().connect() as connection:
+        rows = await connection.execute(
+            text("SELECT indexname, indexdef FROM pg_indexes WHERE tablename = 'email_jobs'")
+        )
+        definitions = {row.indexname: row.indexdef for row in rows}
+
+    assert set(definitions) == {
+        "email_jobs_pkey",
+        "email_jobs_user_id_idx",
+        "email_jobs_user_id_purpose_pending_key",
+        "email_jobs_available_at_pending_idx",
+    }
+    assert "UNIQUE" in definitions["email_jobs_user_id_purpose_pending_key"]
+    for name in ("email_jobs_user_id_purpose_pending_key", "email_jobs_available_at_pending_idx"):
+        assert "WHERE (status = 'pending'" in definitions[name]
+    assert "WHERE" not in definitions["email_jobs_user_id_idx"]
+
+
+@pytest.mark.usefixtures("_restores_head")
+async def test_downgrade_before_email_jobs_removes_table_and_types() -> None:
+    await _migrate(command.downgrade, REVISION_BEFORE_EMAIL_JOBS)
+
+    async with get_engine().connect() as connection:
+        tables = await _tables(connection)
+        purpose_left = await _type_exists(connection, "email_purpose")
+        status_left = await _type_exists(connection, "email_job_status")
+
+    assert "email_jobs" not in tables
+    assert not purpose_left
+    assert not status_left
+
+
+@pytest.mark.usefixtures("_restores_head")
+async def test_downgrade_refuses_while_emails_are_pending() -> None:
+    async with get_engine().begin() as connection:
+        user_id = await _new_user(connection, "waiting@example.com")
+        await _new_job(connection, user_id)
+
+    with pytest.raises(RuntimeError, match="1 emails are still pending"):
+        await _migrate(command.downgrade, REVISION_BEFORE_EMAIL_JOBS)
+
+    get_engine.cache_clear()
+    get_session_factory.cache_clear()
+    async with get_engine().connect() as connection:
+        version = await connection.execute(text("SELECT version_num FROM alembic_version"))
+        jobs = await connection.execute(text("SELECT count(*) FROM email_jobs"))
+        assert version.scalar_one() == ScriptDirectory.from_config(_config()).get_current_head()
+        assert jobs.scalar_one() == 1
+
+
+@pytest.mark.usefixtures("_restores_head")
+async def test_downgrade_drops_failed_emails() -> None:
+    async with get_engine().begin() as connection:
+        user_id = await _new_user(connection, "gave-up@example.com")
+        job_id = await _new_job(connection, user_id)
+        await _fail_job(connection, job_id)
+
+    await _migrate(command.downgrade, REVISION_BEFORE_EMAIL_JOBS)
+
+    async with get_engine().connect() as connection:
+        tables = await _tables(connection)
+
+    assert "email_jobs" not in tables
 
 
 def test_revisions_are_numbered_in_sequence() -> None:
