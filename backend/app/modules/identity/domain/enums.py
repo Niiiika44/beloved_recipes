@@ -35,3 +35,17 @@ class EmailJobStatus(StrEnum):
 
     PENDING = "pending"
     FAILED = "failed"
+
+
+class TokenPurpose(StrEnum):
+    """What a one-time token from an email link is allowed to do"""
+
+    EMAIL_CONFIRM = "email_confirm"
+    PASSWORD_RESET = "password_reset"  # noqa: S105
+
+
+class LoginMethod(StrEnum):
+    """How the user proved who they are"""
+
+    GOOGLE = "google"
+    PASSWORD = "password"  # noqa: S105

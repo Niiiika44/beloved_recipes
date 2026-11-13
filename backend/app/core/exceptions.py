@@ -27,6 +27,16 @@ class InvalidInputError(AppError):
     pass
 
 
+class FieldError(InvalidInputError):
+    """Invalid value of one input field; reason names the rule it broke."""
+
+    field: ClassVar[str]
+
+    def __init__(self, message: str, reason: str):
+        super().__init__(message)
+        self.reason = reason
+
+
 class NotAuthenticatedError(AppError):
     pass
 
