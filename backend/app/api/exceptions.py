@@ -15,10 +15,12 @@ from app.core.exceptions import (
     AppError,
     ConflictError,
     DependencyUnavailableError,
+    FieldError,
     InvalidInputError,
     NotAuthenticatedError,
     NotFoundError,
     PermissionDeniedError,
+    RateLimitedError,
 )
 
 logger = structlog.get_logger(__name__)
@@ -38,6 +40,7 @@ CATEGORY_PROBLEMS: dict[type[AppError], ProblemSpec] = {
     NotFoundError: ProblemSpec(404, "Not Found"),
     ConflictError: ProblemSpec(409, "Conflict"),
     InvalidInputError: ProblemSpec(422, "Unprocessable Content"),
+    RateLimitedError: ProblemSpec(429, "Too Many Requests"),
     DependencyUnavailableError: ProblemSpec(503, "Service Unavailable"),
     AppError: ProblemSpec(500, "Internal Server Error"),
 }
@@ -70,6 +73,19 @@ def problem_type(code: str | None) -> str:
         return PROBLEM_TYPE_PATH + code.replace("_", "-")
     else:
         return BLANK_TYPE
+
+
+def headers_for(error: AppError) -> Mapping[str, str] | None:
+    headers = dict(spec_for(error).headers or {})
+    if isinstance(error, RateLimitedError):
+        headers["Retry-After"] = str(max(1, error.retry_after_seconds))
+    return headers or None
+
+
+def errors_for(error: AppError) -> list[dict[str, Any]] | None:
+    if isinstance(error, FieldError):
+        return [{"loc": ["body", error.field], "msg": error.message, "type": error.reason}]
+    return None
 
 
 def problem_response(
@@ -113,13 +129,16 @@ async def handle_app_error(request: Request, exc: Exception) -> Response:
             message=exc.message,
             exc_info=exc,
         )
+    headers = headers_for(exc)
+    errors = errors_for(exc)
     return problem_response(
         request,
         status=spec.status,
         title=spec.title,
         detail=exc.message,
         problem_type_uri=problem_type(exc.code),
-        headers=spec.headers,
+        headers=headers,
+        errors=errors,
     )
 
 

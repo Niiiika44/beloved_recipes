@@ -9,16 +9,18 @@ import structlog
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, field_validator
 
-from app.api.exceptions import CATEGORY_PROBLEMS, problem_type, spec_for
+from app.api.exceptions import CATEGORY_PROBLEMS, headers_for, problem_type, spec_for
 from app.api.schemas import BLANK_TYPE
 from app.core.exceptions import (
     AppError,
     ConflictError,
     DependencyUnavailableError,
+    FieldError,
     InvalidInputError,
     NotAuthenticatedError,
     NotFoundError,
     PermissionDeniedError,
+    RateLimitedError,
 )
 from app.main import create_app
 
@@ -49,6 +51,18 @@ class SessionExpiredError(NotAuthenticatedError):
 
 class CacheUnreachableError(DependencyUnavailableError):
     pass
+
+
+class LoginThrottledError(RateLimitedError):
+    code = "login_throttled"
+
+
+class InvalidPinError(FieldError):
+    code = "pin_invalid"
+    field = "pin"
+
+    def __init__(self, reason: str):
+        super().__init__("Pin is invalid", reason)
 
 
 class Amount(BaseModel):
@@ -146,6 +160,22 @@ def _build_app() -> FastAPI:
     @app.get("/t/boom-empty")
     async def boom_empty() -> None:
         raise RuntimeError
+
+    @app.get("/t/rate-limited")
+    async def rate_limited() -> None:
+        raise RateLimitedError("Too many attempts", retry_after_seconds=30)
+
+    @app.get("/t/rate-limited-now")
+    async def rate_limited_now() -> None:
+        raise RateLimitedError("Too many attempts", retry_after_seconds=0)
+
+    @app.get("/t/rate-limited-sub")
+    async def rate_limited_sub() -> None:
+        raise LoginThrottledError("Too many login attempts", retry_after_seconds=90)
+
+    @app.get("/t/field")
+    async def field() -> None:
+        raise InvalidPinError("too_short")
 
     return app
 
@@ -348,6 +378,8 @@ async def test_request_id_header_matches_body(client: httpx.AsyncClient) -> None
         ("POST", "/t/amount", {"amount": "x"}),
         ("GET", "/t/unauthenticated", None),
         ("GET", "/t/unauthenticated-sub", None),
+        ("GET", "/t/rate-limited", None),
+        ("GET", "/t/field", None),
     ],
 )
 async def test_client_errors_are_not_logged_as_errors(
@@ -453,3 +485,56 @@ async def test_other_errors_do_not_claim_authentication_scheme(client: httpx.Asy
     response = await client.get("/t/not-found")
 
     assert "www-authenticate" not in response.headers
+
+
+async def test_rate_limited_is_429_with_retry_after(client: httpx.AsyncClient) -> None:
+    response = await client.get("/t/rate-limited")
+    body = response.json()
+
+    assert response.status_code == 429
+    assert response.headers["content-type"] == PROBLEM_JSON
+    assert response.headers["retry-after"] == "30"
+    assert body["type"] == "/problems/rate-limited"
+    assert body["title"] == "Too Many Requests"
+    assert body["request_id"] == response.headers["x-request-id"]
+    assert "www-authenticate" not in response.headers
+
+
+async def test_retry_after_is_never_below_one_second(client: httpx.AsyncClient) -> None:
+    response = await client.get("/t/rate-limited-now")
+
+    assert response.headers["retry-after"] == "1"
+
+
+async def test_rate_limited_subclass_keeps_retry_after(client: httpx.AsyncClient) -> None:
+    response = await client.get("/t/rate-limited-sub")
+
+    assert response.status_code == 429
+    assert response.headers["retry-after"] == "90"
+    assert response.json()["type"] == "/problems/login-throttled"
+
+
+def test_headers_for_keeps_category_headers() -> None:
+    assert headers_for(NotAuthenticatedError("x")) == {"WWW-Authenticate": "Cookie"}
+
+
+def test_headers_for_is_empty_without_headers() -> None:
+    assert headers_for(RecipeNotFoundError("x")) is None
+
+
+async def test_field_error_points_at_field_and_reason(client: httpx.AsyncClient) -> None:
+    response = await client.get("/t/field")
+    body = response.json()
+
+    assert response.status_code == 422
+    assert body["type"] == "/problems/pin-invalid"
+    assert body["detail"] == "Pin is invalid"
+    assert body["errors"] == [
+        {"loc": ["body", "pin"], "msg": "Pin is invalid", "type": "too_short"}
+    ]
+
+
+async def test_other_invalid_input_has_no_errors(client: httpx.AsyncClient) -> None:
+    body = (await client.get("/t/invalid")).json()
+
+    assert "errors" not in body

@@ -43,3 +43,11 @@ class NotAuthenticatedError(AppError):
 
 class DependencyUnavailableError(AppError):
     pass
+
+
+class RateLimitedError(AppError):
+    code = "rate_limited"
+
+    def __init__(self, message: str, retry_after_seconds: int):
+        super().__init__(message)
+        self.retry_after_seconds = retry_after_seconds
