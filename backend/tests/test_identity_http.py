@@ -1,18 +1,20 @@
+import asyncio
 import json
 import logging
 import socket
 import time
 import uuid
+from collections import Counter
 from collections.abc import AsyncIterator, Callable, Iterator
 from datetime import UTC, datetime, timedelta
 from hashlib import sha256
 from http.cookies import SimpleCookie
-from typing import Any
+from typing import Annotated, Any
 
 import httpx
 import pytest
 import structlog
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI
 from redis.asyncio import Redis
 from sqlalchemy import text
 from sqlalchemy.pool import QueuePool
@@ -24,12 +26,20 @@ from app.core.redis import close_redis, get_redis
 from app.main import create_app
 from app.modules.identity.domain.enums import WorkspaceRole
 from app.modules.identity.infrastructure.models import Membership, User, Workspace
+from app.modules.identity.infrastructure.redis_rate_limiter import RedisRateLimiter
 from app.modules.identity.infrastructure.redis_session_store import RedisSessionStore
-from app.modules.identity.routes.dependencies import get_session_store
-from app.modules.identity.service.dto import SessionDTO
+from app.modules.identity.routes.dependencies import (
+    get_current_user,
+    get_rate_limiter,
+    get_session_store,
+    require_nickname,
+)
+from app.modules.identity.service.dto import SessionDTO, UserDTO
 
 ME = "/api/v1/users/me"
 LOGOUT = "/api/v1/auth/logout"
+AVAILABILITY = "/api/v1/nicknames/availability"
+GATED = "/gated"
 PROBLEM_JSON = "application/problem+json"
 AVATAR = "https://lh3.googleusercontent.com/a/ACg8ocK-avatar=s96-c"
 
@@ -197,6 +207,7 @@ async def test_me_without_workspace(client: httpx.AsyncClient) -> None:
         "id": str(user.id),
         "email": user.email,
         "display_name": user.display_name,
+        "nickname": None,
         "avatar_url": None,
         "workspace": None,
     }
@@ -521,3 +532,546 @@ async def test_redis_outage_is_logged_once_with_cause_and_request_id(
     assert errors[0]["status_code"] == 503
     assert errors[0]["exc_info"].__cause__ is not None
     assert errors[0]["request_id"] == response.headers["x-request-id"]
+
+
+async def _patch(client: httpx.AsyncClient, token: str, body: Any) -> httpx.Response:
+    return await client.patch(ME, headers=_cookie(token), json=body)
+
+
+async def _check(client: httpx.AsyncClient, token: str, nickname: str) -> httpx.Response:
+    return await client.get(AVAILABILITY, params={"nickname": nickname}, headers=_cookie(token))
+
+
+async def _stored_nickname(user_id: uuid.UUID) -> str | None:
+    async with get_engine().connect() as connection:
+        nickname: str | None = await connection.scalar(
+            text("SELECT nickname FROM users WHERE id = :id"), {"id": user_id}
+        )
+    return nickname
+
+
+async def _quarantine() -> dict[str, uuid.UUID | None]:
+    async with get_engine().connect() as connection:
+        rows = await connection.execute(
+            text("SELECT nickname, released_by FROM released_nicknames")
+        )
+    return {row.nickname: row.released_by for row in rows}
+
+
+async def _age_release(nickname: str, days: int) -> None:
+    async with get_engine().begin() as connection:
+        await connection.execute(
+            text(
+                "UPDATE released_nicknames SET released_at = now() - make_interval(days => :days) "
+                "WHERE nickname = :nickname"
+            ),
+            {"days": days, "nickname": nickname},
+        )
+
+
+async def _delete_user(user_id: uuid.UUID) -> None:
+    async with get_engine().begin() as connection:
+        await connection.execute(text("DELETE FROM users WHERE id = :id"), {"id": user_id})
+
+
+def _limiter_down(app: FastAPI, dead_redis: Redis) -> None:
+    app.dependency_overrides[get_rate_limiter] = lambda: RedisRateLimiter(
+        client=dead_redis, operation_timeout_seconds=0.5
+    )
+
+
+async def test_me_shows_the_nickname(client: httpx.AsyncClient) -> None:
+    token = await _signed_in(await _user(nickname="anna"))
+
+    response = await client.get(ME, headers=_cookie(token))
+
+    assert response.json()["nickname"] == "anna"
+
+
+async def test_first_nickname_is_set_in_normalized_form(client: httpx.AsyncClient) -> None:
+    user = await _user()
+    token = await _signed_in(user)
+
+    response = await _patch(client, token, {"nickname": "  Anna.Cook "})
+
+    assert response.status_code == 200
+    assert response.json()["nickname"] == "anna.cook"
+    assert response.json()["id"] == str(user.id)
+    assert response.headers["cache-control"] == "no-store"
+    assert await _stored_nickname(user.id) == "anna.cook"
+    assert await _quarantine() == {}
+
+
+async def test_patch_answers_with_the_whole_profile(client: httpx.AsyncClient) -> None:
+    user = await _user()
+    workspace = await _join(user, WorkspaceRole.OWNER, name="Sunday dinners")
+    token = await _signed_in(user)
+
+    patched = await _patch(client, token, {"nickname": "anna"})
+    fetched = await client.get(ME, headers=_cookie(token))
+
+    assert patched.json() == fetched.json()
+    assert patched.json()["workspace"]["id"] == str(workspace.id)
+
+
+@pytest.mark.parametrize("nickname", [None, "anna"], ids=["without_nickname", "with_nickname"])
+async def test_empty_patch_changes_nothing(client: httpx.AsyncClient, nickname: str | None) -> None:
+    user = await _user(nickname=nickname)
+    token = await _signed_in(user)
+
+    response = await _patch(client, token, {})
+
+    assert response.status_code == 200
+    assert response.json()["nickname"] == nickname
+    assert await _stored_nickname(user.id) == nickname
+
+
+async def test_merge_patch_media_type_is_accepted(client: httpx.AsyncClient) -> None:
+    user = await _user()
+    token = await _signed_in(user)
+
+    response = await client.patch(
+        ME,
+        headers={**_cookie(token), "Content-Type": "application/merge-patch+json"},
+        content=json.dumps({"nickname": "anna"}),
+    )
+
+    assert response.status_code == 200
+    assert await _stored_nickname(user.id) == "anna"
+
+
+async def test_non_json_body_is_rejected(client: httpx.AsyncClient) -> None:
+    user = await _user()
+    token = await _signed_in(user)
+
+    response = await client.patch(
+        ME,
+        headers={**_cookie(token), "Content-Type": "text/plain"},
+        content=json.dumps({"nickname": "anna"}),
+    )
+
+    assert response.status_code == 422
+    assert await _stored_nickname(user.id) is None
+
+
+@pytest.mark.parametrize(
+    ("body", "field"),
+    [({"nickname": None}, "nickname"), ({"nickname": "anna", "email": "x@y.z"}, "email")],
+    ids=["null_nickname", "unknown_field"],
+)
+async def test_malformed_patch_is_422(
+    client: httpx.AsyncClient, body: dict[str, Any], field: str
+) -> None:
+    user = await _user(nickname="boris")
+    token = await _signed_in(user)
+
+    response = await _patch(client, token, body)
+
+    assert response.status_code == 422
+    assert response.headers["content-type"] == PROBLEM_JSON
+    assert ["body", field] in [error["loc"] for error in response.json()["errors"]]
+    assert await _stored_nickname(user.id) == "boris"
+
+
+async def test_invalid_nickname_is_422_with_reason(client: httpx.AsyncClient) -> None:
+    token = await _signed_in(await _user())
+
+    response = await _patch(client, token, {"nickname": "ab"})
+
+    assert response.status_code == 422
+    assert response.headers["content-type"] == PROBLEM_JSON
+    assert response.json()["type"] == "/problems/nickname-invalid"
+    assert response.json()["errors"] == [
+        {"loc": ["body", "nickname"], "msg": "Nickname is too short", "type": "too_short"}
+    ]
+
+
+async def test_same_nickname_in_other_case_writes_nothing(client: httpx.AsyncClient) -> None:
+    user = await _user(nickname="anna")
+    token = await _signed_in(user)
+
+    response = await _patch(client, token, {"nickname": "ANNA"})
+
+    assert response.status_code == 200
+    assert response.json()["nickname"] == "anna"
+    assert await _quarantine() == {}
+
+
+async def test_nickname_of_another_user_is_409(client: httpx.AsyncClient) -> None:
+    await _user(nickname="anna")
+    user = await _user(nickname="boris")
+    token = await _signed_in(user)
+
+    response = await _patch(client, token, {"nickname": "Anna"})
+
+    assert response.status_code == 409
+    assert response.headers["content-type"] == PROBLEM_JSON
+    assert response.json()["type"] == "/problems/nickname-taken"
+    assert await _stored_nickname(user.id) == "boris"
+
+
+async def test_released_nickname_is_kept_for_its_former_owner(client: httpx.AsyncClient) -> None:
+    former = await _user(nickname="anna")
+    former_token = await _signed_in(former)
+    other_token = await _signed_in(await _user())
+
+    await _patch(client, former_token, {"nickname": "boris"})
+    stolen = await _patch(client, other_token, {"nickname": "anna"})
+    returned = await _patch(client, former_token, {"nickname": "anna"})
+
+    assert stolen.status_code == 409
+    assert returned.status_code == 200
+    assert await _quarantine() == {"boris": former.id}
+
+
+async def test_quarantine_ends_after_thirty_days(client: httpx.AsyncClient) -> None:
+    former_token = await _signed_in(await _user(nickname="anna"))
+    other = await _user()
+    other_token = await _signed_in(other)
+    await _patch(client, former_token, {"nickname": "boris"})
+    await _age_release("anna", 30)
+
+    response = await _patch(client, other_token, {"nickname": "anna"})
+
+    assert response.status_code == 200
+    assert await _stored_nickname(other.id) == "anna"
+    assert "anna" not in await _quarantine()
+
+
+async def test_nickname_of_deleted_account_stays_quarantined(client: httpx.AsyncClient) -> None:
+    former = await _user(nickname="anna")
+    await _patch(client, await _signed_in(former), {"nickname": "boris"})
+    await _delete_user(former.id)
+    other_token = await _signed_in(await _user())
+
+    response = await _patch(client, other_token, {"nickname": "anna"})
+
+    assert response.status_code == 409
+    assert await _quarantine() == {"anna": None}
+
+
+async def test_fourth_change_in_a_day_is_429(client: httpx.AsyncClient) -> None:
+    user = await _user()
+    token = await _signed_in(user)
+
+    accepted = [
+        (await _patch(client, token, {"nickname": nickname})).status_code
+        for nickname in ("anna", "boris", "clara", "daria")
+    ]
+    refused = await _patch(client, token, {"nickname": "elena"})
+
+    assert accepted == [200, 200, 200, 200]
+    assert refused.status_code == 429
+    assert refused.json()["type"] == "/problems/rate-limited"
+    assert 1 <= int(refused.headers["retry-after"]) <= 86_400
+    assert await _stored_nickname(user.id) == "daria"
+    assert "daria" not in await _quarantine()
+
+
+async def test_refused_attempts_do_not_spend_the_limit(client: httpx.AsyncClient) -> None:
+    await _user(nickname="taken")
+    token = await _signed_in(await _user(nickname="anna"))
+
+    refused = [
+        (await _patch(client, token, {"nickname": nickname})).status_code
+        for nickname in ("taken", "taken", "ab", "admin")
+    ]
+    accepted = [
+        (await _patch(client, token, {"nickname": nickname})).status_code
+        for nickname in ("boris", "clara", "daria")
+    ]
+
+    assert refused == [409, 409, 422, 422]
+    assert accepted == [200, 200, 200]
+
+
+async def test_patch_with_limiter_down_is_503_and_keeps_nickname(
+    app: FastAPI, client: httpx.AsyncClient, dead_redis: Redis
+) -> None:
+    user = await _user(nickname="anna")
+    token = await _signed_in(user)
+    _limiter_down(app, dead_redis)
+
+    response = await _patch(client, token, {"nickname": "boris"})
+
+    assert response.status_code == 503
+    assert response.headers["content-type"] == PROBLEM_JSON
+    assert await _stored_nickname(user.id) == "anna"
+    assert await _quarantine() == {}
+
+
+async def test_patch_by_user_deleted_after_authentication_is_401(
+    app: FastAPI, client: httpx.AsyncClient
+) -> None:
+    user = await _user(nickname="anna")
+    token = await _signed_in(user)
+    stale = UserDTO(
+        id=user.id,
+        nickname="anna",
+        email=user.email,
+        display_name=user.display_name,
+        avatar_url=None,
+    )
+    await _delete_user(user.id)
+    app.dependency_overrides[get_current_user] = lambda: stale
+
+    response = await _patch(client, token, {"nickname": "boris"})
+
+    assert response.status_code == 401
+    assert await _quarantine() == {}
+
+
+async def test_patch_needs_a_session(client: httpx.AsyncClient) -> None:
+    response = await client.patch(ME, json={"nickname": "anna"})
+
+    assert response.status_code == 401
+
+
+async def test_parallel_claims_of_one_nickname_have_one_winner(
+    client: httpx.AsyncClient,
+) -> None:
+    users = [await _user() for _ in range(5)]
+    tokens = [await _signed_in(user) for user in users]
+
+    responses = await asyncio.gather(
+        *(_patch(client, token, {"nickname": "anna"}) for token in tokens)
+    )
+
+    assert sorted(response.status_code for response in responses) == [200, 409, 409, 409, 409]
+    owners = [user.id for user in users if await _stored_nickname(user.id) == "anna"]
+    assert len(owners) == 1
+
+
+async def test_crossing_swaps_never_deadlock(client: httpx.AsyncClient) -> None:
+    first = await _user(nickname="anna")
+    second = await _user(nickname="boris")
+    first_token = await _signed_in(first)
+    second_token = await _signed_in(second)
+
+    statuses: Counter[int] = Counter()
+    for _ in range(10):
+        responses = await asyncio.wait_for(
+            asyncio.gather(
+                _patch(client, first_token, {"nickname": "boris"}),
+                _patch(client, second_token, {"nickname": "anna"}),
+            ),
+            timeout=10,
+        )
+        statuses.update(response.status_code for response in responses)
+
+    assert statuses == Counter({409: 20})
+    assert await _stored_nickname(first.id) == "anna"
+    assert await _stored_nickname(second.id) == "boris"
+
+
+async def test_burst_from_user_without_nickname_respects_the_limit(
+    client: httpx.AsyncClient,
+) -> None:
+    user = await _user()
+    token = await _signed_in(user)
+
+    responses = await asyncio.gather(
+        *(_patch(client, token, {"nickname": f"cook_{index}"}) for index in range(10))
+    )
+
+    statuses = Counter(response.status_code for response in responses)
+    released = await _quarantine()
+    assert set(statuses) <= {200, 429}
+    assert 1 <= statuses[200] <= 4
+    assert len(released) == statuses[200] - 1
+    assert set(released.values()) <= {user.id}
+
+
+async def test_parallel_changes_by_one_user_apply_one_after_another(
+    client: httpx.AsyncClient,
+) -> None:
+    user = await _user(nickname="anna")
+    token = await _signed_in(user)
+
+    responses = await asyncio.gather(
+        _patch(client, token, {"nickname": "boris"}),
+        _patch(client, token, {"nickname": "clara"}),
+    )
+
+    final = await _stored_nickname(user.id)
+    assert [response.status_code for response in responses] == [200, 200]
+    assert final in {"boris", "clara"}
+    assert set(await _quarantine()) == {"anna", "boris", "clara"} - {final}
+
+
+async def test_free_nickname_is_available(client: httpx.AsyncClient) -> None:
+    token = await _signed_in(await _user(nickname="anna"))
+
+    response = await _check(client, token, " Boris ")
+
+    assert response.status_code == 200
+    assert response.json() == {"nickname": "boris", "available": True, "reason": None}
+    assert response.headers["cache-control"] == "no-store"
+
+
+async def test_nickname_of_another_user_is_not_available(client: httpx.AsyncClient) -> None:
+    await _user(nickname="boris")
+    token = await _signed_in(await _user(nickname="anna"))
+
+    response = await _check(client, token, "boris")
+
+    assert response.json() == {"nickname": "boris", "available": False, "reason": "taken"}
+
+
+async def test_own_nickname_is_available(client: httpx.AsyncClient) -> None:
+    token = await _signed_in(await _user(nickname="anna"))
+
+    response = await _check(client, token, "Anna")
+
+    assert response.json() == {"nickname": "anna", "available": True, "reason": None}
+
+
+async def test_quarantine_shows_as_taken_to_others_only(client: httpx.AsyncClient) -> None:
+    former_token = await _signed_in(await _user(nickname="anna"))
+    other_token = await _signed_in(await _user())
+    await _patch(client, former_token, {"nickname": "boris"})
+
+    for_others = await _check(client, other_token, "anna")
+    for_former = await _check(client, former_token, "anna")
+
+    assert for_others.json()["reason"] == "taken"
+    assert for_former.json()["available"] is True
+
+
+@pytest.mark.parametrize(
+    ("raw", "reason"),
+    [("", "too_short"), ("a b c", "bad_characters"), ("admin", "reserved")],
+)
+async def test_invalid_nickname_is_200_with_reason(
+    client: httpx.AsyncClient, raw: str, reason: str
+) -> None:
+    token = await _signed_in(await _user())
+
+    response = await _check(client, token, raw)
+
+    assert response.status_code == 200
+    assert response.json() == {"nickname": None, "available": False, "reason": reason}
+
+
+async def test_check_without_parameter_is_422(client: httpx.AsyncClient) -> None:
+    token = await _signed_in(await _user())
+
+    response = await client.get(AVAILABILITY, headers=_cookie(token))
+
+    assert response.status_code == 422
+    assert response.json()["errors"][0]["loc"] == ["query", "nickname"]
+
+
+async def test_check_needs_a_session(client: httpx.AsyncClient) -> None:
+    response = await client.get(AVAILABILITY, params={"nickname": "anna"})
+
+    assert response.status_code == 401
+
+
+async def test_check_changes_nothing(client: httpx.AsyncClient) -> None:
+    user = await _user()
+    token = await _signed_in(user)
+
+    await _check(client, token, "anna")
+
+    assert await _stored_nickname(user.id) is None
+    assert await _quarantine() == {}
+
+
+async def test_sixty_first_check_in_a_minute_is_429(client: httpx.AsyncClient) -> None:
+    token = await _signed_in(await _user())
+    neighbour_token = await _signed_in(await _user())
+
+    statuses = [(await _check(client, token, "anna")).status_code for _ in range(60)]
+    refused = await _check(client, token, "anna")
+    neighbour = await _check(client, neighbour_token, "anna")
+
+    assert set(statuses) == {200}
+    assert refused.status_code == 429
+    assert 1 <= int(refused.headers["retry-after"]) <= 60
+    assert neighbour.status_code == 200
+
+
+async def test_check_with_limiter_down_is_503(
+    app: FastAPI, client: httpx.AsyncClient, dead_redis: Redis
+) -> None:
+    token = await _signed_in(await _user())
+    _limiter_down(app, dead_redis)
+
+    response = await _check(client, token, "anna")
+
+    assert response.status_code == 503
+
+
+@pytest.fixture
+def gated(app: FastAPI) -> FastAPI:
+    @app.get(GATED)
+    async def gated_route(
+        user: Annotated[UserDTO, Depends(require_nickname)],
+        current: Annotated[UserDTO, Depends(get_current_user)],
+    ) -> dict[str, str | None]:
+        return {"nickname": user.nickname, "current": current.nickname}
+
+    return app
+
+
+async def test_gate_stops_user_without_nickname(gated: FastAPI, client: httpx.AsyncClient) -> None:
+    token = await _signed_in(await _user())
+
+    response = await client.get(GATED, headers=_cookie(token))
+
+    assert response.status_code == 403
+    assert response.headers["content-type"] == PROBLEM_JSON
+    assert response.json()["type"] == "/problems/nickname-required"
+
+
+async def test_gate_lets_user_with_nickname_through(
+    gated: FastAPI, client: httpx.AsyncClient
+) -> None:
+    token = await _signed_in(await _user(nickname="anna"))
+
+    response = await client.get(GATED, headers=_cookie(token))
+
+    assert response.status_code == 200
+    assert response.json() == {"nickname": "anna", "current": "anna"}
+
+
+async def test_gate_does_not_resolve_the_session_twice(
+    gated: FastAPI, client: httpx.AsyncClient
+) -> None:
+    counting = CountingStore(_store(get_redis()))
+    gated.dependency_overrides[get_session_store] = lambda: counting
+    token = await _signed_in(await _user(nickname="anna"))
+
+    await client.get(GATED, headers=_cookie(token))
+
+    assert counting.resolves == 1
+
+
+async def test_gate_needs_a_session(gated: FastAPI, client: httpx.AsyncClient) -> None:
+    response = await client.get(GATED)
+
+    assert response.status_code == 401
+
+
+@pytest.mark.parametrize("path", [ME, AVAILABILITY])
+async def test_profile_and_check_work_without_nickname(
+    client: httpx.AsyncClient, path: str
+) -> None:
+    token = await _signed_in(await _user())
+
+    response = await client.get(path, params={"nickname": "anna"}, headers=_cookie(token))
+
+    assert response.status_code == 200
+
+
+def test_openapi_documents_nickname_endpoints(app: FastAPI) -> None:
+    paths = app.openapi()["paths"]
+    patch = paths[ME]["patch"]
+    check = paths[AVAILABILITY]["get"]
+
+    assert {"200", "401", "409", "422", "429", "503"} <= set(patch["responses"])
+    assert {"200", "401", "422", "429", "503"} <= set(check["responses"])
+    assert check["parameters"][0]["name"] == "nickname"
+    assert check["parameters"][0]["in"] == "query"
+    assert check["parameters"][0]["required"] is True

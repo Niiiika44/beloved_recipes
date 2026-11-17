@@ -114,6 +114,31 @@ def test_routes_reach_infrastructure_only_through_dependencies(module: str) -> N
     assert _violations(files, (f"app.modules.{module}.infrastructure",)) == {}
 
 
+def _repository_files(module: str) -> list[Path]:
+    return [
+        path for path in _layer_files(module, "infrastructure") if path.name == "repositories.py"
+    ]
+
+
+@pytest.mark.parametrize("module", MODULE_NAMES)
+def test_repositories_do_not_know_about_errors(module: str) -> None:
+    forbidden = ("app.core.exceptions", f"app.modules.{module}.domain.exceptions")
+
+    assert _violations(_repository_files(module), forbidden) == {}
+
+
+@pytest.mark.parametrize("module", MODULE_NAMES)
+def test_repositories_never_raise(module: str) -> None:
+    raising = {
+        str(path.relative_to(BACKEND)): node.lineno
+        for path in _repository_files(module)
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8")))
+        if isinstance(node, ast.Raise)
+    }
+
+    assert raising == {}
+
+
 def _accepts_assignment(dto: type[Any]) -> bool:
     instance = object.__new__(dto)
     field_name = dataclasses.fields(instance)[0].name

@@ -7,7 +7,7 @@ from pydantic import ValidationError
 
 from app.core.config import Settings, get_settings
 
-SECTIONS = ("APP", "DB", "REDIS", "SECURITY", "SESSION", "GOOGLE", "MAIL")
+SECTIONS = ("APP", "DB", "REDIS", "SECURITY", "SESSION", "RATE_LIMIT", "GOOGLE", "MAIL")
 
 REQUIRED_ENV = {
     "DB__USER": "recipes",
@@ -283,6 +283,33 @@ def test_non_positive_session_durations_are_rejected(
 def test_typo_inside_session_section_is_rejected(monkeypatch: pytest.MonkeyPatch) -> None:
     with pytest.raises(ValidationError):
         _build(monkeypatch, SESSION__COOKIE_NAMEE="sid")
+
+
+def test_rate_limit_section_is_optional_and_has_defaults(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = _build(monkeypatch)
+
+    assert settings.rate_limit.operation_timeout_seconds == 1.0
+
+
+def test_rate_limit_values_are_read_from_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    settings = _build(monkeypatch, RATE_LIMIT__OPERATION_TIMEOUT_SECONDS="0.25")
+
+    assert settings.rate_limit.operation_timeout_seconds == 0.25
+
+
+@pytest.mark.parametrize("value", ["0", "-0.5"])
+def test_non_positive_rate_limit_timeout_is_rejected(
+    monkeypatch: pytest.MonkeyPatch, value: str
+) -> None:
+    with pytest.raises(ValidationError):
+        _build(monkeypatch, RATE_LIMIT__OPERATION_TIMEOUT_SECONDS=value)
+
+
+def test_typo_inside_rate_limit_section_is_rejected(monkeypatch: pytest.MonkeyPatch) -> None:
+    with pytest.raises(ValidationError):
+        _build(monkeypatch, RATE_LIMIT__OPERATION_TIMEOUT="0.5")
 
 
 def test_public_base_url_defaults_to_local_origin(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -1,6 +1,8 @@
+import dataclasses
+import uuid
 from collections.abc import Mapping
-from datetime import timedelta
-from typing import get_args
+from datetime import UTC, datetime, timedelta, timezone
+from typing import Any, get_args
 
 import pytest
 
@@ -29,9 +31,15 @@ from app.modules.identity.domain.exceptions import (
     PasswordProblem,
     WeakPasswordError,
 )
+from app.modules.identity.domain.limits import (
+    NICKNAME_CHANGE_LIMIT,
+    NICKNAME_CHECK_LIMIT,
+    RateLimit,
+)
 from app.modules.identity.domain.nicknames import (
     NICKNAME_QUARANTINE,
     RESERVED_NICKNAMES,
+    is_quarantined,
     normalize_nickname,
 )
 from app.modules.identity.domain.passwords import normalize_password
@@ -108,6 +116,86 @@ def test_reserved_nicknames_match_the_decision_log() -> None:
 
 def test_nickname_quarantine_lasts_thirty_days() -> None:
     assert timedelta(days=30) == NICKNAME_QUARANTINE
+
+
+RELEASED_AT = datetime(2026, 11, 1, 12, 0, tzinfo=UTC)
+ASKER = uuid.UUID("01900000-0000-7000-8000-000000000001")
+FORMER_OWNER = uuid.UUID("01900000-0000-7000-8000-000000000002")
+
+
+def _quarantined(released_by: uuid.UUID | None, age: timedelta) -> bool:
+    return is_quarantined(
+        released_by=released_by,
+        released_at=RELEASED_AT,
+        user_id=ASKER,
+        now=RELEASED_AT + age,
+    )
+
+
+@pytest.mark.parametrize(
+    "age",
+    [
+        timedelta(0),
+        timedelta(seconds=1),
+        timedelta(days=29),
+        timedelta(days=30) - timedelta(seconds=1),
+    ],
+)
+def test_someone_elses_released_nickname_is_quarantined(age: timedelta) -> None:
+    assert _quarantined(FORMER_OWNER, age) is True
+
+
+@pytest.mark.parametrize(
+    "age", [timedelta(days=30), timedelta(days=30, seconds=1), timedelta(days=365)]
+)
+def test_quarantine_ends_after_thirty_days(age: timedelta) -> None:
+    assert _quarantined(FORMER_OWNER, age) is False
+
+
+@pytest.mark.parametrize("age", [timedelta(0), timedelta(days=1), timedelta(days=31)])
+def test_own_released_nickname_is_never_quarantined(age: timedelta) -> None:
+    assert _quarantined(ASKER, age) is False
+
+
+def test_nickname_of_deleted_account_is_quarantined() -> None:
+    assert _quarantined(None, timedelta(days=1)) is True
+
+
+def test_nickname_of_deleted_account_is_free_after_thirty_days() -> None:
+    assert _quarantined(None, timedelta(days=30)) is False
+
+
+def test_quarantine_compares_moments_across_time_zones() -> None:
+    moscow = datetime(2026, 11, 1, 15, 0, tzinfo=timezone(timedelta(hours=3)))
+
+    assert is_quarantined(
+        released_by=FORMER_OWNER,
+        released_at=RELEASED_AT,
+        user_id=ASKER,
+        now=moscow + timedelta(days=30) - timedelta(seconds=1),
+    )
+
+
+def test_quarantine_arguments_are_keyword_only() -> None:
+    call: Any = is_quarantined
+
+    with pytest.raises(TypeError):
+        call(FORMER_OWNER, RELEASED_AT, ASKER, RELEASED_AT)
+
+
+def test_nickname_change_limit_is_three_per_day() -> None:
+    assert RateLimit(limit=3, window=timedelta(days=1)) == NICKNAME_CHANGE_LIMIT
+
+
+def test_nickname_check_limit_is_sixty_per_minute() -> None:
+    assert RateLimit(limit=60, window=timedelta(minutes=1)) == NICKNAME_CHECK_LIMIT
+
+
+def test_rate_limit_is_immutable() -> None:
+    rule: Any = NICKNAME_CHANGE_LIMIT
+
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        rule.limit = 100
 
 
 @pytest.mark.parametrize(

@@ -1,76 +1,17 @@
 import uuid
 from datetime import UTC, datetime
-from types import TracebackType
-from typing import Self
 
 import pytest
+from fakes import FakeUnitOfWork, make_user
 
 from app.core.exceptions import DependencyUnavailableError, NotAuthenticatedError
-from app.modules.identity.domain.enums import WorkspaceRole
-from app.modules.identity.service.auth import authenticate, get_me, logout
-from app.modules.identity.service.dto import MembershipDTO, SessionDTO, UserDTO
-from app.modules.identity.service.ports import SessionStore, UnitOfWork, UserRepository
+from app.modules.identity.service.auth import authenticate, logout
+from app.modules.identity.service.dto import SessionDTO, UserDTO
+from app.modules.identity.service.ports import SessionStore, UnitOfWork
 
 TOKEN = "T" * 43
 OTHER_TOKEN = "O" * 43
 CREATED_AT = datetime(2026, 10, 16, 9, 0, tzinfo=UTC)
-
-
-def _user(name: str = "Cook") -> UserDTO:
-    return UserDTO(
-        id=uuid.uuid7(),
-        email=f"{name.lower()}@example.com",
-        display_name=name,
-        avatar_url=None,
-    )
-
-
-class FakeUsers:
-    def __init__(
-        self,
-        uow: FakeUnitOfWork,
-        users: dict[uuid.UUID, UserDTO],
-        memberships: dict[uuid.UUID, MembershipDTO],
-    ) -> None:
-        self._uow = uow
-        self._users = users
-        self._memberships = memberships
-
-    async def get(self, user_id: uuid.UUID) -> UserDTO | None:
-        assert self._uow.active, "repository used outside the unit of work"
-        return self._users.get(user_id)
-
-    async def get_membership(self, user_id: uuid.UUID) -> MembershipDTO | None:
-        assert self._uow.active, "repository used outside the unit of work"
-        return self._memberships.get(user_id)
-
-
-class FakeUnitOfWork:
-    users: UserRepository
-
-    def __init__(
-        self,
-        users: list[UserDTO] | None = None,
-        memberships: dict[uuid.UUID, MembershipDTO] | None = None,
-    ) -> None:
-        self.active = False
-        self.commits = 0
-        self.users = FakeUsers(self, {user.id: user for user in users or []}, memberships or {})
-
-    async def commit(self) -> None:
-        self.commits += 1
-
-    async def __aenter__(self) -> Self:
-        self.active = True
-        return self
-
-    async def __aexit__(
-        self,
-        exc_type: type[BaseException] | None,
-        exc_val: BaseException | None,
-        exc_tb: TracebackType | None,
-    ) -> None:
-        self.active = False
 
 
 class FakeStore:
@@ -136,7 +77,7 @@ async def test_missing_token_is_rejected_without_asking_the_store(token: str | N
 
 
 async def test_unknown_session_is_rejected() -> None:
-    store, uow = _world(_user())
+    store, uow = _world(make_user())
 
     with pytest.raises(NotAuthenticatedError):
         await authenticate(TOKEN, store, uow)
@@ -145,9 +86,9 @@ async def test_unknown_session_is_rejected() -> None:
     assert store.revoked == []
 
 
-async def test_valid_session_yields_its_user() -> None:
-    owner = _user("Owner")
-    stranger = _user("Stranger")
+async def test_valid_session_yields_itsmake_user() -> None:
+    owner = make_user("Owner")
+    stranger = make_user("Stranger")
     store, uow = _world(stranger, owner, sessions={TOKEN: _session_of(owner.id)})
 
     found = await authenticate(TOKEN, store, uow)
@@ -157,7 +98,7 @@ async def test_valid_session_yields_its_user() -> None:
 
 
 async def test_authentication_does_not_commit() -> None:
-    owner = _user()
+    owner = make_user()
     store, uow = _world(owner, sessions={TOKEN: _session_of(owner.id)})
 
     await authenticate(TOKEN, store, uow)
@@ -167,7 +108,7 @@ async def test_authentication_does_not_commit() -> None:
 
 
 async def test_session_of_deleted_user_is_revoked_and_rejected() -> None:
-    store, uow = _world(_user(), sessions={TOKEN: _session_of(uuid.uuid7())})
+    store, uow = _world(make_user(), sessions={TOKEN: _session_of(uuid.uuid7())})
 
     with pytest.raises(NotAuthenticatedError):
         await authenticate(TOKEN, store, uow)
@@ -237,40 +178,8 @@ async def test_store_outage_while_revoking_orphan_is_not_disguised_as_rejection(
     assert caught.value is outage
 
 
-async def test_me_without_workspace_has_no_membership() -> None:
-    user = _user()
-    uow = FakeUnitOfWork([user])
-
-    me = await get_me(user, uow)
-
-    assert me.user == user
-    assert me.membership is None
-
-
-@pytest.mark.parametrize("role", list(WorkspaceRole))
-async def test_me_includes_membership(role: WorkspaceRole) -> None:
-    user = _user()
-    membership = MembershipDTO(workspace_id=uuid.uuid7(), workspace_name="Home", role=role)
-    uow = FakeUnitOfWork([user], {user.id: membership})
-
-    me = await get_me(user, uow)
-
-    assert me.user == user
-    assert me.membership == membership
-
-
-async def test_me_does_not_commit() -> None:
-    user = _user()
-    uow = FakeUnitOfWork([user])
-
-    await get_me(user, uow)
-
-    assert uow.commits == 0
-    assert uow.active is False
-
-
 async def test_logout_revokes_the_session() -> None:
-    owner = _user()
+    owner = make_user()
     store, _ = _world(owner, sessions={TOKEN: _session_of(owner.id)})
 
     await logout(TOKEN, store)

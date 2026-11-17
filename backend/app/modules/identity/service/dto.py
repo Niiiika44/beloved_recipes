@@ -14,6 +14,7 @@ class SessionDTO:
 @dataclass(frozen=True, slots=True)
 class UserDTO:
     id: UUID
+    nickname: str | None
     email: str
     display_name: str
     avatar_url: str | None
@@ -30,3 +31,21 @@ class MembershipDTO:
 class MeDTO:
     user: UserDTO
     membership: MembershipDTO | None
+
+
+@dataclass(frozen=True, slots=True)
+class ProfileChangesDTO:
+    nickname: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class ReleasedNicknameDTO:
+    released_by: UUID | None
+    released_at: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class NicknameAvailabilityDTO:
+    nickname: str | None
+    available: bool
+    reason: str | None

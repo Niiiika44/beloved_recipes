@@ -87,6 +87,22 @@ async def test_reads_through_its_repository(
     assert found.id == user_id
 
 
+async def test_repositories_share_one_transaction(
+    factory: async_sessionmaker[AsyncSession], user_id: uuid.UUID
+) -> None:
+    async with SqlAlchemyUnitOfWork(factory) as uow:
+        await uow.nicknames.change(user_id, None, "anna")
+        seen = await uow.users.get(user_id)
+
+    async with SqlAlchemyUnitOfWork(factory) as uow:
+        after_rollback = await uow.users.get(user_id)
+
+    assert seen is not None
+    assert seen.nickname == "anna"
+    assert after_rollback is not None
+    assert after_rollback.nickname is None
+
+
 async def test_can_be_entered_twice_in_a_row(
     factory: async_sessionmaker[AsyncSession], user_id: uuid.UUID
 ) -> None:

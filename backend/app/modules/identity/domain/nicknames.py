@@ -1,6 +1,7 @@
 import re
 import unicodedata
-from datetime import timedelta
+from datetime import datetime, timedelta
+from uuid import UUID
 
 from app.modules.identity.domain.exceptions import InvalidNicknameError
 
@@ -42,3 +43,11 @@ def normalize_nickname(raw: str) -> str:
     if nickname in RESERVED_NICKNAMES:
         raise InvalidNicknameError("reserved")
     return nickname
+
+
+def is_quarantined(
+    *, released_by: UUID | None, released_at: datetime, user_id: UUID, now: datetime
+) -> bool:
+    if released_by == user_id:
+        return False
+    return (now - released_at) < NICKNAME_QUARANTINE

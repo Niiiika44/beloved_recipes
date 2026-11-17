@@ -8,11 +8,13 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from app.core.config import Settings, get_settings
 from app.core.db import get_session_factory
 from app.core.redis import get_redis
+from app.modules.identity.infrastructure.redis_rate_limiter import RedisRateLimiter
 from app.modules.identity.infrastructure.redis_session_store import RedisSessionStore
 from app.modules.identity.infrastructure.uow import SqlAlchemyUnitOfWork
 from app.modules.identity.service.auth import authenticate
 from app.modules.identity.service.dto import UserDTO
-from app.modules.identity.service.ports import SessionStore, UnitOfWork
+from app.modules.identity.service.nicknames import ensure_nickname
+from app.modules.identity.service.ports import RateLimiter, SessionStore, UnitOfWork
 
 
 def get_session_store(
@@ -25,6 +27,15 @@ def get_session_store(
         absolute_ttl_seconds=settings.session.absolute_ttl_seconds,
         operation_timeout_seconds=settings.session.operation_timeout_seconds,
         now=lambda: datetime.now(UTC),
+    )
+
+
+def get_rate_limiter(
+    client: Annotated[Redis, Depends(get_redis)],
+    settings: Annotated[Settings, Depends(get_settings)],
+) -> RateLimiter:
+    return RedisRateLimiter(
+        client=client, operation_timeout_seconds=settings.rate_limit.operation_timeout_seconds
     )
 
 
@@ -44,3 +55,12 @@ async def get_current_user(
     user = await authenticate(token=token, store=store, uow=uow)
     request.state.user_id = user.id
     return user
+
+
+async def require_nickname(
+    user: Annotated[
+        UserDTO,
+        Depends(get_current_user),
+    ],
+) -> UserDTO:
+    return ensure_nickname(user)

@@ -1,5 +1,5 @@
 from app.modules.identity.domain.exceptions import InvalidSessionError
-from app.modules.identity.service.dto import MeDTO, UserDTO
+from app.modules.identity.service.dto import UserDTO
 from app.modules.identity.service.ports import SessionStore, UnitOfWork
 
 
@@ -19,11 +19,5 @@ async def authenticate(token: str | None, store: SessionStore, uow: UnitOfWork) 
 
 async def logout(token: str | None, store: SessionStore) -> None:
     if not token:
-        return None
+        return
     await store.revoke(token)
-
-
-async def get_me(user: UserDTO, uow: UnitOfWork) -> MeDTO:
-    async with uow:
-        membership = await uow.users.get_membership(user.id)
-    return MeDTO(user=user, membership=membership)

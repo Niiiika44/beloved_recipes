@@ -3,12 +3,16 @@ from typing import Self
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from app.modules.identity.infrastructure.repositories import SqlUserRepository
-from app.modules.identity.service.ports import UserRepository
+from app.modules.identity.infrastructure.repositories import (
+    SqlNicknameRepository,
+    SqlUserRepository,
+)
+from app.modules.identity.service.ports import NicknameRepository, UserRepository
 
 
 class SqlAlchemyUnitOfWork:
     users: UserRepository
+    nicknames: NicknameRepository
     _session: AsyncSession
     _committed: bool
 
@@ -18,6 +22,7 @@ class SqlAlchemyUnitOfWork:
     async def __aenter__(self) -> Self:
         self._session = self._session_factory()
         self.users = SqlUserRepository(self._session)
+        self.nicknames = SqlNicknameRepository(self._session)
         self._committed = False
         return self
 

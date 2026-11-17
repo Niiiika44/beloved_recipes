@@ -64,6 +64,7 @@ async def test_get_returns_user_dto(session: AsyncSession) -> None:
 
     assert found == UserDTO(
         id=user.id,
+        nickname=None,
         email=user.email,
         display_name=user.display_name,
         avatar_url=user.avatar_url,

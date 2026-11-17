@@ -1,10 +1,14 @@
+from collections.abc import Collection
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import delete, func, select, update
+from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.modules.identity.infrastructure.models import Membership, User, Workspace
-from app.modules.identity.service.dto import MembershipDTO, UserDTO
+from app.modules.identity.infrastructure.models import Membership, ReleasedNickname, User, Workspace
+from app.modules.identity.service.dto import MembershipDTO, ReleasedNicknameDTO, UserDTO
+
+NICKNAME_LOCK_SPACE = 1
 
 
 class SqlUserRepository:
@@ -12,13 +16,25 @@ class SqlUserRepository:
         self._session = session
 
     async def get(self, user_id: UUID) -> UserDTO | None:
+        return await self._fetch(user_id, for_update=False)
+
+    async def get_for_update(self, user_id: UUID) -> UserDTO | None:
+        return await self._fetch(user_id, for_update=True)
+
+    async def _fetch(self, user_id: UUID, *, for_update: bool) -> UserDTO | None:
         query = select(User).where(User.id == user_id)
+        if for_update:
+            query = query.with_for_update()
         result = await self._session.execute(query)
         user = result.scalar_one_or_none()
         if user is None:
             return None
         return UserDTO(
-            id=user.id, email=user.email, display_name=user.display_name, avatar_url=user.avatar_url
+            id=user.id,
+            email=user.email,
+            display_name=user.display_name,
+            avatar_url=user.avatar_url,
+            nickname=user.nickname,
         )
 
     async def get_membership(self, user_id: UUID) -> MembershipDTO | None:
@@ -36,3 +52,53 @@ class SqlUserRepository:
             workspace_name=membership.name,
             role=membership.role,
         )
+
+
+class SqlNicknameRepository:
+    def __init__(self, session: AsyncSession):
+        self._session = session
+
+    async def lock(self, nicknames: Collection[str]) -> None:
+        if not nicknames:
+            return
+        query_nicknames = select(*(func.hashtext(n) for n in nicknames))
+        result = await self._session.execute(query_nicknames)
+        for key in sorted(result.one()):
+            query = select(func.pg_advisory_xact_lock(NICKNAME_LOCK_SPACE, key))
+            await self._session.execute(query)
+
+    async def get_owner(self, nickname: str) -> UUID | None:
+        query = select(User.id).where(User.nickname == nickname)
+        result = await self._session.execute(query)
+        return result.scalar_one_or_none()
+
+    async def get_release(self, nickname: str) -> ReleasedNicknameDTO | None:
+        query = select(ReleasedNickname).where(ReleasedNickname.nickname == nickname)
+        result = await self._session.execute(query)
+        released_nickname = result.scalar_one_or_none()
+        if released_nickname is None:
+            return None
+        return ReleasedNicknameDTO(
+            released_by=released_nickname.released_by, released_at=released_nickname.released_at
+        )
+
+    async def change(self, user_id: UUID, current: str | None, new: str) -> None:
+        query_user_update = update(User).where(User.id == user_id).values(nickname=new)
+        await self._session.execute(query_user_update)
+        query_quarantine = delete(ReleasedNickname).where(ReleasedNickname.nickname == new)
+        await self._session.execute(query_quarantine)
+        if current is None:
+            return
+        query_quarantine_update = (
+            insert(ReleasedNickname)
+            .values(
+                nickname=current,
+                released_by=user_id,
+                released_at=func.now(),
+            )
+            .on_conflict_do_update(
+                index_elements=["nickname"],
+                set_={"released_at": func.now(), "released_by": user_id},
+            )
+        )
+        await self._session.execute(query_quarantine_update)

@@ -77,6 +77,10 @@ class SessionSection(_Section):
         return self
 
 
+class RateLimitSection(_Section):
+    operation_timeout_seconds: float = Field(1.0, gt=0)
+
+
 class GoogleSection(_Section):
     client_id: str
     client_secret: SecretStr
@@ -162,6 +166,7 @@ class Settings(BaseSettings):
     app: AppSection = Field(default_factory=AppSection)
     db: DatabaseSection
     session: SessionSection = Field(default_factory=SessionSection)
+    rate_limit: RateLimitSection = Field(default_factory=RateLimitSection)
     redis: RedisSection
     security: SecuritySection
     google: GoogleSection
