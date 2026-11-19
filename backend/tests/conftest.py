@@ -1,14 +1,23 @@
 import os
-from collections.abc import Iterator, Mapping
+import socket
+from collections.abc import AsyncIterator, Iterator, Mapping
 from pathlib import Path
 
+import httpx
 import pytest
 from alembic.config import Config
+from fastapi import FastAPI
+from redis.asyncio import Redis
+from sqlalchemy import text
 from testcontainers.community.postgres import PostgresContainer
 from testcontainers.community.redis import RedisContainer
 
 from alembic import command
 from app.core.config import get_settings
+from app.core.db import dispose_engine, get_engine, get_session_factory
+from app.core.redis import close_redis, get_redis
+from app.main import create_app
+from app.modules.identity.routes.dependencies import get_password_hasher
 
 REDIS_TEST_PASSWORD = "test-redis-password"
 ALEMBIC_INI = Path(__file__).resolve().parents[1] / "alembic.ini"
@@ -76,3 +85,45 @@ def migrated_schema(_point_at_container: None) -> Iterator[None]:
     yield
 
     command.downgrade(config, "base")
+
+
+def _free_port() -> int:
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        port: int = probe.getsockname()[1]
+    return port
+
+
+@pytest.fixture
+async def app(migrated_schema: None, _point_redis_at_container: None) -> AsyncIterator[FastAPI]:
+    get_engine.cache_clear()
+    get_session_factory.cache_clear()
+    get_redis.cache_clear()
+    get_password_hasher.cache_clear()
+    await get_redis().flushdb()
+    application = create_app()
+
+    yield application
+
+    application.dependency_overrides.clear()
+    async with get_engine().begin() as connection:
+        await connection.execute(text("TRUNCATE users, workspaces, memberships, invites CASCADE"))
+    await dispose_engine()
+    await close_redis()
+    get_password_hasher.cache_clear()
+
+
+@pytest.fixture
+async def client(app: FastAPI) -> AsyncIterator[httpx.AsyncClient]:
+    transport = httpx.ASGITransport(app, raise_app_exceptions=False)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as instance:
+        yield instance
+
+
+@pytest.fixture
+async def dead_redis() -> AsyncIterator[Redis]:
+    client = Redis(host="127.0.0.1", port=_free_port(), decode_responses=True)
+
+    yield client
+
+    await client.aclose()

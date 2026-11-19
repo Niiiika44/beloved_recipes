@@ -1,11 +1,10 @@
 import asyncio
 import json
 import logging
-import socket
 import time
 import uuid
 from collections import Counter
-from collections.abc import AsyncIterator, Callable, Iterator
+from collections.abc import Callable, Iterator
 from datetime import UTC, datetime, timedelta
 from hashlib import sha256
 from http.cookies import SimpleCookie
@@ -21,9 +20,8 @@ from sqlalchemy.pool import QueuePool
 from structlog.processors import JSONRenderer
 
 from app.core.config import get_settings
-from app.core.db import dispose_engine, get_engine, get_session_factory
-from app.core.redis import close_redis, get_redis
-from app.main import create_app
+from app.core.db import get_engine, get_session_factory
+from app.core.redis import get_redis
 from app.modules.identity.domain.enums import WorkspaceRole
 from app.modules.identity.infrastructure.models import Membership, User, Workspace
 from app.modules.identity.infrastructure.redis_rate_limiter import RedisRateLimiter
@@ -67,13 +65,6 @@ def _session_key(token: str) -> str:
     return "session:" + sha256(token.encode()).hexdigest()
 
 
-def _free_port() -> int:
-    with socket.socket() as probe:
-        probe.bind(("127.0.0.1", 0))
-        port: int = probe.getsockname()[1]
-    return port
-
-
 def _checked_out() -> int:
     pool = get_engine().pool
     assert isinstance(pool, QueuePool)
@@ -94,39 +85,6 @@ class CountingStore:
 
     async def revoke(self, token: str) -> None:
         await self._inner.revoke(token)
-
-
-@pytest.fixture
-async def app(migrated_schema: None, _point_redis_at_container: None) -> AsyncIterator[FastAPI]:
-    get_engine.cache_clear()
-    get_session_factory.cache_clear()
-    get_redis.cache_clear()
-    await get_redis().flushdb()
-    application = create_app()
-
-    yield application
-
-    application.dependency_overrides.clear()
-    async with get_engine().begin() as connection:
-        await connection.execute(text("TRUNCATE users, workspaces, memberships, invites CASCADE"))
-    await dispose_engine()
-    await close_redis()
-
-
-@pytest.fixture
-async def client(app: FastAPI) -> AsyncIterator[httpx.AsyncClient]:
-    transport = httpx.ASGITransport(app, raise_app_exceptions=False)
-    async with httpx.AsyncClient(transport=transport, base_url="http://test") as instance:
-        yield instance
-
-
-@pytest.fixture
-async def dead_redis() -> AsyncIterator[Redis]:
-    client = Redis(host="127.0.0.1", port=_free_port(), decode_responses=True)
-
-    yield client
-
-    await client.aclose()
 
 
 async def _user(**overrides: Any) -> User:

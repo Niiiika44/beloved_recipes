@@ -3,9 +3,15 @@ from collections.abc import Collection, Iterable
 from types import TracebackType
 from typing import Self
 
+from app.modules.identity.domain.enums import EmailPurpose
 from app.modules.identity.domain.limits import RateLimit
 from app.modules.identity.service.dto import MembershipDTO, ReleasedNicknameDTO, UserDTO
-from app.modules.identity.service.ports import NicknameRepository, UserRepository
+from app.modules.identity.service.ports import (
+    EmailJobRepository,
+    NicknameRepository,
+    PasswordRepository,
+    UserRepository,
+)
 
 
 def make_user(name: str = "Cook", nickname: str | None = None) -> UserDTO:
@@ -34,6 +40,25 @@ class FakeUsers:
         self._uow.record("get_membership")
         return self._uow.memberships.get(user_id)
 
+    async def create(self, email: str, display_name: str) -> uuid.UUID | None:
+        self._uow.record("create")
+        if self._uow.find_email(email) is not None:
+            return None
+        user = UserDTO(
+            id=uuid.uuid7(),
+            nickname=None,
+            email=email,
+            display_name=display_name,
+            avatar_url=None,
+        )
+        self._uow.stored[user.id] = user
+        self._uow.created.append(user)
+        return user.id
+
+    async def find_by_email(self, email: str) -> UserDTO | None:
+        self._uow.record("find_by_email")
+        return self._uow.find_email(email)
+
 
 class FakeNicknames:
     def __init__(self, uow: FakeUnitOfWork) -> None:
@@ -57,9 +82,29 @@ class FakeNicknames:
         self._uow.changes.append((user_id, current, new))
 
 
+class FakePasswords:
+    def __init__(self, uow: FakeUnitOfWork) -> None:
+        self._uow = uow
+
+    async def set_hash(self, user_id: uuid.UUID, password_hash: str) -> None:
+        self._uow.record("set_hash")
+        self._uow.password_hashes[user_id] = password_hash
+
+
+class FakeEmailJobs:
+    def __init__(self, uow: FakeUnitOfWork) -> None:
+        self._uow = uow
+
+    async def enqueue(self, purpose: EmailPurpose, user_id: uuid.UUID) -> None:
+        self._uow.record("enqueue")
+        self._uow.jobs.append((purpose, user_id))
+
+
 class FakeUnitOfWork:
     users: UserRepository
     nicknames: NicknameRepository
+    passwords: PasswordRepository
+    email_jobs: EmailJobRepository
 
     def __init__(
         self,
@@ -75,8 +120,17 @@ class FakeUnitOfWork:
         self.calls: list[str] = []
         self.locked: list[list[str]] = []
         self.changes: list[tuple[uuid.UUID, str | None, str]] = []
+        self.created: list[UserDTO] = []
+        self.password_hashes: dict[uuid.UUID, str] = {}
+        self.jobs: list[tuple[EmailPurpose, uuid.UUID]] = []
         self.users = FakeUsers(self)
         self.nicknames = FakeNicknames(self)
+        self.passwords = FakePasswords(self)
+        self.email_jobs = FakeEmailJobs(self)
+
+    def find_email(self, email: str) -> UserDTO | None:
+        found = [user for user in self.stored.values() if user.email.lower() == email.lower()]
+        return found[0] if found else None
 
     def record(self, call: str) -> None:
         assert self.active, f"{call} used outside the unit of work"
@@ -120,3 +174,39 @@ class FakeLimiter:
         if self.failure is not None:
             raise self.failure
         return self.retry_after
+
+
+class FakeHasher:
+    def __init__(self, uow: FakeUnitOfWork | None = None) -> None:
+        self.uow = uow
+        self.passwords: list[str] = []
+
+    async def hash_password(self, password: str) -> str:
+        self.passwords.append(password)
+        if self.uow is not None:
+            self.uow.calls.append("hash")
+        return f"$argon2id$fake${len(self.passwords)}"
+
+
+class FakeBreachChecker:
+    def __init__(self, answer: bool | None = False, uow: FakeUnitOfWork | None = None) -> None:
+        self.answer = answer
+        self.uow = uow
+        self.passwords: list[str] = []
+
+    async def is_breached(self, password: str) -> bool | None:
+        self.passwords.append(password)
+        if self.uow is not None:
+            self.uow.calls.append("is_breached")
+        return self.answer
+
+
+class FakeEvents:
+    def __init__(self) -> None:
+        self.recorded: list[tuple[str, ...]] = []
+
+    def rate_limited(self, action: str, scope: str) -> None:
+        self.recorded.append(("rate_limited", action, scope))
+
+    def breach_check_unavailable(self) -> None:
+        self.recorded.append(("breach_check_unavailable",))

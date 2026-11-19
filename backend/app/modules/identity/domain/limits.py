@@ -1,3 +1,5 @@
+import hashlib
+import hmac
 from dataclasses import dataclass
 from datetime import timedelta
 
@@ -10,3 +12,9 @@ class RateLimit:
 
 NICKNAME_CHANGE_LIMIT = RateLimit(3, timedelta(days=1))
 NICKNAME_CHECK_LIMIT = RateLimit(60, timedelta(minutes=1))
+REGISTRATION_EMAIL_LIMIT = RateLimit(5, timedelta(hours=1))
+REGISTRATION_IP_LIMIT = RateLimit(20, timedelta(hours=1))
+
+
+def email_fingerprint(email: str, secret: bytes) -> str:
+    return hmac.new(secret, email.lower().encode(), hashlib.sha256).hexdigest()

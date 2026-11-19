@@ -4,15 +4,24 @@ from typing import Self
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.modules.identity.infrastructure.repositories import (
+    SqlEmailJobRepository,
     SqlNicknameRepository,
+    SqlPasswordRepository,
     SqlUserRepository,
 )
-from app.modules.identity.service.ports import NicknameRepository, UserRepository
+from app.modules.identity.service.ports import (
+    EmailJobRepository,
+    NicknameRepository,
+    PasswordRepository,
+    UserRepository,
+)
 
 
 class SqlAlchemyUnitOfWork:
     users: UserRepository
     nicknames: NicknameRepository
+    passwords: PasswordRepository
+    email_jobs: EmailJobRepository
     _session: AsyncSession
     _committed: bool
 
@@ -23,6 +32,8 @@ class SqlAlchemyUnitOfWork:
         self._session = self._session_factory()
         self.users = SqlUserRepository(self._session)
         self.nicknames = SqlNicknameRepository(self._session)
+        self.passwords = SqlPasswordRepository(self._session)
+        self.email_jobs = SqlEmailJobRepository(self._session)
         self._committed = False
         return self
 

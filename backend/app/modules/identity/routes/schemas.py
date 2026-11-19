@@ -1,6 +1,6 @@
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, EmailStr, Field
 
 from app.modules.identity.domain.enums import WorkspaceRole
 
@@ -30,3 +30,11 @@ class UpdateMeRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     nickname: str = Field(default="", description="User's nickname")
+
+
+class RegisterRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    email: EmailStr = Field(..., description="Email to sign in with")
+    password: str = Field(..., description="Password, 8 to 128 characters")
+    display_name: str = Field(..., description="Name shown to other users")

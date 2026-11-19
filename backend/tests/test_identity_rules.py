@@ -1,4 +1,6 @@
 import dataclasses
+import hashlib
+import hmac
 import uuid
 from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta, timezone
@@ -34,7 +36,10 @@ from app.modules.identity.domain.exceptions import (
 from app.modules.identity.domain.limits import (
     NICKNAME_CHANGE_LIMIT,
     NICKNAME_CHECK_LIMIT,
+    REGISTRATION_EMAIL_LIMIT,
+    REGISTRATION_IP_LIMIT,
     RateLimit,
+    email_fingerprint,
 )
 from app.modules.identity.domain.nicknames import (
     NICKNAME_QUARANTINE,
@@ -189,6 +194,50 @@ def test_nickname_change_limit_is_three_per_day() -> None:
 
 def test_nickname_check_limit_is_sixty_per_minute() -> None:
     assert RateLimit(limit=60, window=timedelta(minutes=1)) == NICKNAME_CHECK_LIMIT
+
+
+def test_registration_email_limit_is_five_per_hour() -> None:
+    assert RateLimit(limit=5, window=timedelta(hours=1)) == REGISTRATION_EMAIL_LIMIT
+
+
+def test_registration_ip_limit_is_twenty_per_hour() -> None:
+    assert RateLimit(limit=20, window=timedelta(hours=1)) == REGISTRATION_IP_LIMIT
+
+
+FINGERPRINT_SECRET = b"fingerprint-secret"
+
+
+def test_email_fingerprint_is_hmac_sha256_of_lowercased_email() -> None:
+    expected = hmac.new(FINGERPRINT_SECRET, b"anna@example.org", hashlib.sha256).hexdigest()
+
+    assert email_fingerprint("Anna@Example.ORG", FINGERPRINT_SECRET) == expected
+
+
+@pytest.mark.parametrize("email", ["anna@example.org", "ANNA@EXAMPLE.ORG", "Anna@example.Org"])
+def test_email_fingerprint_ignores_case(email: str) -> None:
+    assert email_fingerprint(email, FINGERPRINT_SECRET) == email_fingerprint(
+        "anna@example.org", FINGERPRINT_SECRET
+    )
+
+
+def test_email_fingerprint_depends_on_the_secret() -> None:
+    assert email_fingerprint("anna@example.org", b"one") != email_fingerprint(
+        "anna@example.org", b"two"
+    )
+
+
+def test_email_fingerprint_differs_between_emails() -> None:
+    assert email_fingerprint("anna@example.org", FINGERPRINT_SECRET) != email_fingerprint(
+        "boris@example.org", FINGERPRINT_SECRET
+    )
+
+
+def test_email_fingerprint_cannot_be_matched_against_plain_sha256() -> None:
+    fingerprint = email_fingerprint("anna@example.org", FINGERPRINT_SECRET)
+
+    assert fingerprint != hashlib.sha256(b"anna@example.org").hexdigest()
+    assert "anna" not in fingerprint
+    assert len(fingerprint) == 64
 
 
 def test_rate_limit_is_immutable() -> None:

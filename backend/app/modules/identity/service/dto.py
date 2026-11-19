@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from uuid import UUID
 
@@ -49,3 +49,11 @@ class NicknameAvailabilityDTO:
     nickname: str | None
     available: bool
     reason: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class RegistrationDTO:
+    email: str
+    password: str = field(repr=False)
+    display_name: str
+    client_ip: str | None
