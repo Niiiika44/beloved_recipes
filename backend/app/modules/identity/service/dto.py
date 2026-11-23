@@ -72,3 +72,17 @@ class EmailJobDTO:
 class ResendConfirmationDTO:
     email: str
     client_ip: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class LoginDTO:
+    email: str
+    password: str = field(repr=False)
+    client_ip: str | None
+    current_token: str | None = field(repr=False)
+
+
+@dataclass(frozen=True, slots=True)
+class PasswordCheckDTO:
+    matches: bool
+    needs_rehash: bool

@@ -167,6 +167,13 @@ class SqlPasswordRepository:
         )
         await self._session.execute(query)
 
+    async def get_hash(self, user_id: UUID) -> str | None:
+        query = select(PasswordCredential.password_hash).where(
+            PasswordCredential.user_id == user_id
+        )
+        result = await self._session.execute(query)
+        return result.scalar_one_or_none()
+
 
 class SqlEmailJobRepository:
     def __init__(self, session: AsyncSession):

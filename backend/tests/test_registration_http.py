@@ -29,10 +29,10 @@ from app.modules.identity.infrastructure.structlog_security_events import (
 )
 from app.modules.identity.routes.dependencies import (
     get_breach_checker,
-    get_limit_secret,
     get_password_hasher,
     get_rate_limiter,
     get_registration_service,
+    get_secret,
     get_security_events,
     get_uow,
 )
@@ -65,7 +65,11 @@ def fast_hashing(app: FastAPI) -> None:
 
 
 async def _register(client: httpx.AsyncClient, **overrides: Any) -> httpx.Response:
-    return await client.post(REGISTER, json=BODY | overrides)
+    return await client.post(
+        REGISTER,
+        content=json.dumps(BODY | overrides),
+        headers={"Content-Type": "application/json"},
+    )
 
 
 async def _rows(sql: str) -> list[Any]:
@@ -168,7 +172,12 @@ async def test_parallel_registrations_of_one_email_create_one_user(
 
 @pytest.mark.parametrize(
     ("password", "reason"),
-    [("short", "too_short"), ("        ", "blank"), ("x" * 129, "too_long")],
+    [
+        ("short", "too_short"),
+        ("        ", "blank"),
+        ("x" * 129, "too_long"),
+        ("correct horse \ud800", "bad_characters"),
+    ],
 )
 async def test_weak_password_is_422_with_reason(
     client: httpx.AsyncClient, breach: FakeBreachChecker, password: str, reason: str
@@ -364,7 +373,7 @@ def services(app: FastAPI) -> tuple[list[RegistrationService], list[PasswordHash
         hasher: Annotated[PasswordHasher, Depends(get_password_hasher)],
         breach_checker: Annotated[BreachedPasswordChecker, Depends(get_breach_checker)],
         events: Annotated[SecurityEvents, Depends(get_security_events)],
-        secret: Annotated[bytes, Depends(get_limit_secret)],
+        secret: Annotated[bytes, Depends(get_secret)],
     ) -> RegistrationService:
         service = get_registration_service(uow, limiter, hasher, breach_checker, events, secret)
         built.append(service)
@@ -392,7 +401,7 @@ async def test_each_request_gets_its_own_service_and_the_shared_hasher(
 def test_limit_secret_comes_from_security_settings() -> None:
     settings = get_settings()
 
-    assert get_limit_secret(settings) == settings.security.secret_key.get_secret_value().encode()
+    assert get_secret(settings) == settings.security.secret_key.get_secret_value().encode()
 
 
 def test_production_dependencies_build_the_real_adapters() -> None:
@@ -400,12 +409,17 @@ def test_production_dependencies_build_the_real_adapters() -> None:
     assert isinstance(get_security_events(), StructlogSecurityEvents)
 
 
-def test_password_hasher_is_one_per_process() -> None:
-    get_password_hasher.cache_clear()
+async def test_registrations_use_the_hasher_of_the_application(
+    app: FastAPI,
+    client: httpx.AsyncClient,
+    breach: FakeBreachChecker,
+    services: tuple[list[RegistrationService], list[PasswordHasher]],
+) -> None:
+    await _register(client)
+    await _register(client, email="boris@example.org")
 
-    assert get_password_hasher() is get_password_hasher()
-
-    get_password_hasher.cache_clear()
+    _, hashers = services
+    assert hashers == [app.state.password_hasher] * 2
 
 
 async def test_password_never_reaches_the_logs(

@@ -366,6 +366,28 @@ def test_whitespace_only_password_is_blank(raw: str) -> None:
     assert excinfo.value.reason == "blank"
 
 
+@pytest.mark.parametrize(
+    "raw",
+    ["correct horse \ud800", "\udfff" * 10, "\ud83d" + " battery staple", "\ud800"],
+    ids=["high_inside", "low_only", "unpaired_high_first", "too_short_too"],
+)
+def test_password_with_lone_surrogate_has_bad_characters(raw: str) -> None:
+    with pytest.raises(WeakPasswordError) as excinfo:
+        normalize_password(raw)
+
+    assert excinfo.value.reason == "bad_characters"
+    assert excinfo.value.field == "password"
+
+
+@pytest.mark.parametrize(
+    "raw",
+    ["пароль 😀 эмодзи", "𝕔𝕠𝕣𝕣𝕖𝕔𝕥 horse", "tab\tinside password", "zero\u200dwidth joiner"],
+    ids=["emoji", "astral_letters", "tab", "zwj"],
+)
+def test_password_of_valid_text_survives_encoding(raw: str) -> None:
+    normalize_password(raw).encode()
+
+
 def test_password_with_inner_spaces_is_accepted() -> None:
     assert normalize_password("мама мыла раму") == "мама мыла раму"
 

@@ -1,15 +1,17 @@
 import uuid
-from collections.abc import Collection, Iterable
-from datetime import timedelta
+from collections.abc import Collection, Iterable, Mapping
+from datetime import UTC, datetime, timedelta
 from types import TracebackType
 from typing import Self
 
-from app.modules.identity.domain.enums import EmailPurpose, TokenPurpose
+from app.modules.identity.domain.enums import EmailPurpose, LoginMethod, TokenPurpose
 from app.modules.identity.domain.limits import RateLimit
 from app.modules.identity.service.dto import (
     EmailJobDTO,
     MembershipDTO,
+    PasswordCheckDTO,
     ReleasedNicknameDTO,
+    SessionDTO,
     UserDTO,
 )
 from app.modules.identity.service.ports import (
@@ -105,6 +107,10 @@ class FakePasswords:
     async def set_hash(self, user_id: uuid.UUID, password_hash: str) -> None:
         self._uow.record("set_hash")
         self._uow.password_hashes[user_id] = password_hash
+
+    async def get_hash(self, user_id: uuid.UUID) -> str | None:
+        self._uow.record("get_hash")
+        return self._uow.password_hashes.get(user_id)
 
 
 class FakeEmailJobs:
@@ -203,10 +209,12 @@ class FakeLimiter:
         uow: FakeUnitOfWork | None = None,
         retry_after: int | None = None,
         failure: Exception | None = None,
+        refusing: str = "",
     ) -> None:
         self.uow = uow
         self.retry_after = retry_after
         self.failure = failure
+        self.refusing = refusing
         self.hits: list[tuple[str, RateLimit]] = []
         self.hit_inside_uow: list[bool] = []
 
@@ -217,19 +225,45 @@ class FakeLimiter:
             self.hit_inside_uow.append(self.uow.active)
         if self.failure is not None:
             raise self.failure
-        return self.retry_after
+        return self.retry_after if key.startswith(self.refusing) else None
 
 
 class FakeHasher:
-    def __init__(self, uow: FakeUnitOfWork | None = None) -> None:
+    def __init__(
+        self,
+        uow: FakeUnitOfWork | None = None,
+        accepted: Mapping[str, str] | None = None,
+        outdated: Collection[str] = (),
+    ) -> None:
         self.uow = uow
+        self.accepted = dict(accepted or {})
+        self.outdated = set(outdated)
         self.passwords: list[str] = []
+        self.verified: list[tuple[str, str]] = []
+        self.dummies: list[str] = []
+        self.inside_uow: list[bool] = []
+
+    def _record(self, call: str) -> None:
+        if self.uow is not None:
+            self.uow.calls.append(call)
+            self.inside_uow.append(self.uow.active)
 
     async def hash_password(self, password: str) -> str:
         self.passwords.append(password)
-        if self.uow is not None:
-            self.uow.calls.append("hash")
+        self._record("hash")
         return f"$argon2id$fake${len(self.passwords)}"
+
+    async def verify(self, password_hash: str, password: str) -> PasswordCheckDTO:
+        self.verified.append((password_hash, password))
+        self._record("verify")
+        matches = self.accepted.get(password_hash) == password
+        return PasswordCheckDTO(
+            matches=matches, needs_rehash=matches and password_hash in self.outdated
+        )
+
+    async def verify_dummy(self, password: str) -> None:
+        self.dummies.append(password)
+        self._record("verify_dummy")
 
 
 class FakeBreachChecker:
@@ -257,6 +291,58 @@ class FakeEvents:
 
     def email_confirmed(self, user_id: uuid.UUID) -> None:
         self.recorded.append(("email_confirmed", str(user_id)))
+
+    def login_succeeded(self, user_id: uuid.UUID, method: LoginMethod) -> None:
+        self.recorded.append(("login_succeeded", str(user_id), method.value))
+
+    def login_failed(self, reason: str) -> None:
+        self.recorded.append(("login_failed", reason))
+
+    def logout(self, user_id: uuid.UUID | None) -> None:
+        self.recorded.append(("logout", str(user_id) if user_id else "-"))
+
+
+class FakeSessions:
+    def __init__(
+        self,
+        uow: FakeUnitOfWork | None = None,
+        live: Mapping[str, uuid.UUID] | None = None,
+        failure: Exception | None = None,
+    ) -> None:
+        self.uow = uow
+        self.failure = failure
+        self.live = dict(live or {})
+        self.created: list[tuple[uuid.UUID, str]] = []
+        self.revoked: list[str] = []
+        self.order: list[str] = []
+        self.inside_uow: list[bool] = []
+
+    def _record(self, call: str) -> None:
+        self.order.append(call)
+        if self.uow is not None:
+            self.uow.calls.append(call)
+            self.inside_uow.append(self.uow.active)
+        if self.failure is not None:
+            raise self.failure
+
+    async def create(self, user_id: uuid.UUID) -> str:
+        self._record("create_session")
+        token = f"session-{len(self.created) + 1}"
+        self.created.append((user_id, token))
+        self.live[token] = user_id
+        return token
+
+    async def resolve(self, token: str) -> SessionDTO | None:
+        self._record("resolve_session")
+        user_id = self.live.get(token)
+        if user_id is None:
+            return None
+        return SessionDTO(user_id=user_id, created_at=datetime(2026, 11, 23, tzinfo=UTC))
+
+    async def revoke(self, token: str) -> None:
+        self._record("revoke_session")
+        self.revoked.append(token)
+        self.live.pop(token, None)
 
 
 class FakeTokens:

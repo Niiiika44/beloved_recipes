@@ -1,6 +1,6 @@
 from app.modules.identity.domain.exceptions import InvalidSessionError
 from app.modules.identity.service.dto import UserDTO
-from app.modules.identity.service.ports import SessionStore, UnitOfWork
+from app.modules.identity.service.ports import SecurityEvents, SessionStore, UnitOfWork
 
 
 async def authenticate(token: str | None, store: SessionStore, uow: UnitOfWork) -> UserDTO:
@@ -17,7 +17,12 @@ async def authenticate(token: str | None, store: SessionStore, uow: UnitOfWork) 
     return user
 
 
-async def logout(token: str | None, store: SessionStore) -> None:
+async def logout(token: str | None, store: SessionStore, events: SecurityEvents) -> None:
     if not token:
         return
+    session = await store.resolve(token=token)
     await store.revoke(token)
+    if session is None:
+        events.logout(user_id=None)
+    else:
+        events.logout(user_id=session.user_id)

@@ -616,3 +616,22 @@ def test_env_example_yields_working_local_settings() -> None:
     assert settings.mail.tls == "none"
     assert settings.mail.username is None
     assert settings.mail.password is None
+
+
+def test_redis_pool_waits_one_second_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    settings = _build(monkeypatch)
+
+    assert settings.redis.pool_timeout_seconds == 1.0
+    assert settings.redis.max_connections == 10
+
+
+def test_redis_pool_timeout_is_read_from_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    settings = _build(monkeypatch, REDIS__POOL_TIMEOUT_SECONDS="0.25")
+
+    assert settings.redis.pool_timeout_seconds == 0.25
+
+
+@pytest.mark.parametrize("value", ["0", "-1"])
+def test_redis_pool_timeout_must_be_positive(monkeypatch: pytest.MonkeyPatch, value: str) -> None:
+    with pytest.raises(ValidationError):
+        _build(monkeypatch, REDIS__POOL_TIMEOUT_SECONDS=value)

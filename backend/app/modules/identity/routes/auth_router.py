@@ -3,24 +3,27 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, Request, Response, status
 
 from app.core.config import Settings, get_settings
-from app.modules.identity.routes.cookies import cookie_info
+from app.modules.identity.routes.cookies import cookie_info, set_session_cookie
 from app.modules.identity.routes.dependencies import (
-    get_limit_secret,
     get_one_time_token_store,
+    get_password_login_service,
     get_rate_limiter,
     get_registration_service,
+    get_secret,
     get_security_events,
     get_session_store,
     get_uow,
 )
 from app.modules.identity.routes.schemas import (
     ConfirmEmailRequest,
+    LoginRequest,
     RegisterRequest,
     ResendConfirmationRequest,
 )
 from app.modules.identity.service.auth import logout
-from app.modules.identity.service.dto import RegistrationDTO, ResendConfirmationDTO
+from app.modules.identity.service.dto import LoginDTO, RegistrationDTO, ResendConfirmationDTO
 from app.modules.identity.service.email_confirmation import confirm_email, resend_confirmation
+from app.modules.identity.service.password_login import PasswordLoginService
 from app.modules.identity.service.ports import (
     OneTimeTokenStore,
     RateLimiter,
@@ -37,9 +40,39 @@ router = APIRouter(
 
 
 @router.post(
+    "/login",
+    status_code=status.HTTP_204_NO_CONTENT,
+    response_class=Response,
+    summary="Log in with email and password",
+    responses={
+        401: {"description": "Wrong email or password, or a password of invalid format"},
+        403: {"description": "Email is not confirmed yet"},
+        422: {"description": "Malformed request body"},
+        429: {"description": "Too many login attempts; see Retry-After"},
+        503: {"description": "Rate limiter, database or session store is unavailable"},
+    },
+)
+async def do_login(
+    body: LoginRequest,
+    request: Request,
+    response: Response,
+    settings: Annotated[Settings, Depends(get_settings)],
+    service: Annotated[PasswordLoginService, Depends(get_password_login_service)],
+) -> None:
+    response.headers["Cache-Control"] = "no-store"
+    token = request.cookies.get(settings.session.cookie_name)
+    client_ip = request.client.host if request.client else None
+    login = LoginDTO(
+        email=body.email, password=body.password, client_ip=client_ip, current_token=token
+    )
+    new_token = await service.login(login)
+    set_session_cookie(response, settings, new_token)
+
+
+@router.post(
     "/logout",
     status_code=status.HTTP_204_NO_CONTENT,
-    response_model=None,
+    response_class=Response,
     summary="Log out the current user",
     responses={503: {"description": "Session store is unavailable"}},
 )
@@ -48,9 +81,10 @@ async def do_logout(
     response: Response,
     settings: Annotated[Settings, Depends(get_settings)],
     store: Annotated[SessionStore, Depends(get_session_store)],
+    events: Annotated[SecurityEvents, Depends(get_security_events)],
 ) -> None:
     token = request.cookies.get(settings.session.cookie_name)
-    await logout(token=token, store=store)
+    await logout(token=token, store=store, events=events)
     cookie = cookie_info(settings.session.cookie_name, settings.session.cookie_secure)
     response.set_cookie(**cookie, max_age=0)
 
@@ -122,7 +156,7 @@ async def resend_confirmation_email(
     response: Response,
     uow: Annotated[UnitOfWork, Depends(get_uow)],
     limiter: Annotated[RateLimiter, Depends(get_rate_limiter)],
-    secret: Annotated[bytes, Depends(get_limit_secret)],
+    secret: Annotated[bytes, Depends(get_secret)],
     events: Annotated[SecurityEvents, Depends(get_security_events)],
 ) -> None:
     response.headers["Cache-Control"] = "no-store"

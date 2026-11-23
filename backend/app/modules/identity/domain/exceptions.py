@@ -10,7 +10,7 @@ from app.core.exceptions import (
 )
 
 NicknameProblem = Literal["too_short", "too_long", "bad_characters", "bad_dots", "reserved"]
-PasswordProblem = Literal["blank", "too_short", "too_long", "breached"]
+PasswordProblem = Literal["bad_characters", "blank", "too_short", "too_long", "breached"]
 DisplayNameProblem = Literal["empty", "too_long", "bad_characters"]
 
 
@@ -54,6 +54,7 @@ class WeakPasswordError(FieldError):
     field = "password"
 
     messages: ClassVar[Mapping[PasswordProblem, str]] = {
+        "bad_characters": "Password contains characters that are not valid text",
         "blank": "Password consists only of whitespace",
         "too_short": "Password is too short",
         "too_long": "Password is too long",

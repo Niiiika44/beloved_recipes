@@ -7,10 +7,11 @@ from fastapi import APIRouter, FastAPI
 from app.api.exceptions import register_exception_handlers
 from app.api.health import router as health_router
 from app.core.config import get_settings
-from app.core.db import dispose_engine, get_engine
+from app.core.db import dispose_engine, get_session_factory
 from app.core.logging import configure_logging
 from app.core.middleware import request_context
 from app.core.redis import close_redis, get_redis
+from app.modules.identity.infrastructure.argon2_password_hasher import Argon2PasswordHasher
 from app.modules.identity.routes.router import router as identity_router
 
 logger = structlog.get_logger(__name__)
@@ -21,17 +22,18 @@ API_V1_PREFIX = "/api/v1"
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
     configure_logging()
+    get_session_factory()
+    get_redis()
+    app.state.password_hasher = Argon2PasswordHasher()
     try:
         yield
     finally:
         try:
-            if get_engine.cache_info().currsize > 0:
-                await dispose_engine()
+            await dispose_engine()
         except Exception as exc:
             logger.warning("app.dispose_engine_unavailable", error=str(exc))
         try:
-            if get_redis.cache_info().currsize > 0:
-                await close_redis()
+            await close_redis()
         except Exception as exc:
             logger.warning("app.redis_close_unavailable", error=str(exc))
 

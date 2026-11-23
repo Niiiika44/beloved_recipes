@@ -9,6 +9,8 @@ PASSWORD_MAX_LENGTH = 128
 def normalize_password(raw: str) -> str:
     """Return the form to hash and to verify against; spaces are part of the password."""
     password = unicodedata.normalize("NFKC", raw)
+    if any(unicodedata.category(character) == "Cs" for character in password):
+        raise WeakPasswordError("bad_characters")
     if not password.strip():
         raise WeakPasswordError("blank")
     if len(password) < PASSWORD_MIN_LENGTH:

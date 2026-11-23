@@ -244,6 +244,45 @@ async def test_set_hash_never_commits(factory: async_sessionmaker[AsyncSession])
     assert await _hashes(factory) == {}
 
 
+async def test_get_hash_returns_the_stored_hash(factory: async_sessionmaker[AsyncSession]) -> None:
+    user_id = await _committed_user(factory, "anna@example.org")
+    async with factory() as session:
+        await SqlPasswordRepository(session).set_hash(user_id, "$argon2id$stored")
+        await session.commit()
+
+    async with factory() as session:
+        assert await SqlPasswordRepository(session).get_hash(user_id) == "$argon2id$stored"
+
+
+async def test_get_hash_of_user_without_password_is_none(
+    factory: async_sessionmaker[AsyncSession],
+) -> None:
+    neighbour = await _committed_user(factory, "boris@example.org")
+    user_id = await _committed_user(factory, "anna@example.org")
+    async with factory() as session:
+        await SqlPasswordRepository(session).set_hash(neighbour, "$argon2id$neighbour")
+        await session.commit()
+
+    async with factory() as session:
+        assert await SqlPasswordRepository(session).get_hash(user_id) is None
+        assert await SqlPasswordRepository(session).get_hash(uuid.uuid7()) is None
+
+
+async def test_get_hash_reads_only_the_given_user(
+    factory: async_sessionmaker[AsyncSession],
+) -> None:
+    neighbour = await _committed_user(factory, "boris@example.org")
+    user_id = await _committed_user(factory, "anna@example.org")
+    async with factory() as session:
+        await SqlPasswordRepository(session).set_hash(neighbour, "$argon2id$neighbour")
+        await SqlPasswordRepository(session).set_hash(user_id, "$argon2id$own")
+        await session.commit()
+
+    async with factory() as session:
+        assert await SqlPasswordRepository(session).get_hash(user_id) == "$argon2id$own"
+        assert await SqlPasswordRepository(session).get_hash(neighbour) == "$argon2id$neighbour"
+
+
 async def test_enqueue_creates_a_pending_job_ready_now(
     factory: async_sessionmaker[AsyncSession],
 ) -> None:

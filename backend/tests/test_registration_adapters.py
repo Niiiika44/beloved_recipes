@@ -121,6 +121,7 @@ async def test_concurrency_limit_is_configurable(slow_hash: SlowHash, limit: int
 
 async def test_hashing_runs_off_the_event_loop(slow_hash: SlowHash) -> None:
     hasher = Argon2PasswordHasher()
+    slow_hash.threads.clear()
     ticks = 0
 
     async def ticker() -> None:

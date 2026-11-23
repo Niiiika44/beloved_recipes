@@ -4,11 +4,12 @@ from types import TracebackType
 from typing import Protocol, Self
 from uuid import UUID
 
-from app.modules.identity.domain.enums import EmailPurpose, TokenPurpose
+from app.modules.identity.domain.enums import EmailPurpose, LoginMethod, TokenPurpose
 from app.modules.identity.domain.limits import RateLimit
 from app.modules.identity.service.dto import (
     EmailJobDTO,
     MembershipDTO,
+    PasswordCheckDTO,
     ReleasedNicknameDTO,
     SessionDTO,
     UserDTO,
@@ -52,6 +53,8 @@ class NicknameRepository(Protocol):
 class PasswordRepository(Protocol):
     async def set_hash(self, user_id: UUID, password_hash: str) -> None: ...
 
+    async def get_hash(self, user_id: UUID) -> str | None: ...
+
 
 class EmailJobRepository(Protocol):
     async def enqueue(self, purpose: EmailPurpose, user_id: UUID) -> None: ...
@@ -92,6 +95,10 @@ class RateLimiter(Protocol):
 class PasswordHasher(Protocol):
     async def hash_password(self, password: str) -> str: ...
 
+    async def verify(self, password_hash: str, password: str) -> PasswordCheckDTO: ...
+
+    async def verify_dummy(self, password: str) -> None: ...
+
 
 class BreachedPasswordChecker(Protocol):
     async def is_breached(self, password: str) -> bool | None: ...
@@ -103,6 +110,12 @@ class SecurityEvents(Protocol):
     def breach_check_unavailable(self) -> None: ...
 
     def email_confirmed(self, user_id: UUID) -> None: ...
+
+    def login_succeeded(self, user_id: UUID, method: LoginMethod) -> None: ...
+
+    def login_failed(self, reason: str) -> None: ...
+
+    def logout(self, user_id: UUID | None) -> None: ...
 
 
 class OneTimeTokenStore(Protocol):

@@ -150,6 +150,7 @@ class RedisSection(_Section):
     socket_timeout_seconds: int = 2
     socket_connect_timeout_seconds: int = 2
     max_connections: int = 10
+    pool_timeout_seconds: float = Field(1.0, gt=0)
     health_check_interval: int = 10
 
     @property

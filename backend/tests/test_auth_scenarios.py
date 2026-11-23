@@ -2,7 +2,7 @@ import uuid
 from datetime import UTC, datetime
 
 import pytest
-from fakes import FakeUnitOfWork, make_user
+from fakes import FakeEvents, FakeUnitOfWork, make_user
 
 from app.core.exceptions import DependencyUnavailableError, NotAuthenticatedError
 from app.modules.identity.service.auth import authenticate, logout
@@ -182,19 +182,43 @@ async def test_logout_revokes_the_session() -> None:
     owner = make_user()
     store, _ = _world(owner, sessions={TOKEN: _session_of(owner.id)})
 
-    await logout(TOKEN, store)
+    await logout(TOKEN, store, FakeEvents())
 
     assert store.revoked == [TOKEN]
     assert TOKEN not in store.sessions
 
 
+async def test_logout_names_the_user_of_the_session() -> None:
+    owner = make_user()
+    store, _ = _world(owner, sessions={TOKEN: _session_of(owner.id)})
+    events = FakeEvents()
+
+    await logout(TOKEN, store, events)
+
+    assert events.recorded == [("logout", str(owner.id))]
+
+
+async def test_logout_with_dead_token_is_an_anonymous_event() -> None:
+    store, _ = _world(sessions={OTHER_TOKEN: _session_of(uuid.uuid7())})
+    events = FakeEvents()
+
+    await logout(TOKEN, store, events)
+
+    assert store.revoked == [TOKEN]
+    assert events.recorded == [("logout", "-")]
+    assert OTHER_TOKEN in store.sessions
+
+
 @pytest.mark.parametrize("token", [None, ""], ids=["none", "empty"])
 async def test_logout_without_token_touches_nothing(token: str | None) -> None:
     store, _ = _world()
+    events = FakeEvents()
 
-    await logout(token, store)
+    await logout(token, store, events)
 
+    assert store.resolved == []
     assert store.revoked == []
+    assert events.recorded == []
 
 
 async def test_store_outage_during_logout_is_reported() -> None:
@@ -202,6 +226,18 @@ async def test_store_outage_during_logout_is_reported() -> None:
     store = FakeStore(revoke_failure=outage)
 
     with pytest.raises(DependencyUnavailableError) as caught:
-        await logout(TOKEN, store)
+        await logout(TOKEN, store, FakeEvents())
 
     assert caught.value is outage
+
+
+async def test_store_outage_while_resolving_on_logout_is_reported_without_event() -> None:
+    outage = DependencyUnavailableError("Session store is unavailable")
+    store = FakeStore(resolve_failure=outage)
+    events = FakeEvents()
+
+    with pytest.raises(DependencyUnavailableError) as caught:
+        await logout(TOKEN, store, events)
+
+    assert caught.value is outage
+    assert events.recorded == []

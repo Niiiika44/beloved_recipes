@@ -1,14 +1,18 @@
 import logging
+import socket
 from collections.abc import Iterator
 
 import httpx
 import pytest
 import structlog
+from starlette.requests import Request
 
 from app.core.config import get_settings
 from app.core.db import get_engine, get_session_factory
 from app.core.redis import get_redis
 from app.main import create_app, lifespan
+from app.modules.identity.infrastructure.argon2_password_hasher import Argon2PasswordHasher
+from app.modules.identity.routes.dependencies import get_password_hasher
 
 PROD_SECRET = "p" * 40
 
@@ -101,25 +105,38 @@ async def test_lifespan_closes_created_resources() -> None:
 
 
 @pytest.mark.usefixtures("quiet_logging")
-async def test_lifespan_does_not_create_unused_resources(
+async def test_lifespan_creates_engine_and_redis_before_requests() -> None:
+    async with lifespan(create_app()):
+        assert get_engine.cache_info().currsize == 1
+        assert get_session_factory.cache_info().currsize == 1
+        assert get_redis.cache_info().currsize == 1
+        assert get_session_factory().kw["bind"] is get_engine()
+
+
+def _free_port() -> int:
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        port: int = probe.getsockname()[1]
+    return port
+
+
+@pytest.mark.usefixtures("quiet_logging")
+async def test_application_starts_while_postgres_and_redis_are_down(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    calls: list[str] = []
+    monkeypatch.setenv("DB__PORT", str(_free_port()))
+    monkeypatch.setenv("REDIS__PORT", str(_free_port()))
+    get_settings.cache_clear()
+    app = create_app()
 
-    async def track_engine() -> None:
-        calls.append("engine")
+    async with lifespan(app):
+        transport = httpx.ASGITransport(app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            alive = await client.get("/healthz")
 
-    async def track_redis() -> None:
-        calls.append("redis")
-
-    monkeypatch.setattr("app.main.dispose_engine", track_engine)
-    monkeypatch.setattr("app.main.close_redis", track_redis)
-
-    async with lifespan(create_app()):
-        pass
-
-    assert calls == []
+    assert alive.status_code == 200
     assert get_engine.cache_info().currsize == 0
+    assert get_redis.cache_info().currsize == 0
 
 
 @pytest.mark.usefixtures("quiet_logging")
@@ -163,3 +180,27 @@ async def test_redis_close_failure_is_logged_and_not_raised(
     assert get_engine.cache_info().currsize == 0
     assert [record["event"] for record in records] == ["app.redis_close_unavailable"]
     assert records[0]["error"] == "redis is gone"
+
+
+def _request_to(app: object) -> Request:
+    return Request({"type": "http", "app": app, "headers": []})
+
+
+@pytest.mark.usefixtures("quiet_logging")
+async def test_lifespan_builds_the_password_hasher_before_requests() -> None:
+    app = create_app()
+
+    async with lifespan(app):
+        hasher = app.state.password_hasher
+
+        assert isinstance(hasher, Argon2PasswordHasher)
+        assert await get_password_hasher(_request_to(app)) is hasher
+        assert await get_password_hasher(_request_to(app)) is hasher
+
+
+@pytest.mark.usefixtures("quiet_logging")
+async def test_each_application_gets_its_own_hasher() -> None:
+    first, second = create_app(), create_app()
+
+    async with lifespan(first), lifespan(second):
+        assert first.state.password_hasher is not second.state.password_hasher

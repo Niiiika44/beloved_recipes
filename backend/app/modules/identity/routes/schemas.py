@@ -40,6 +40,13 @@ class RegisterRequest(BaseModel):
     display_name: str = Field(..., description="Name shown to other users")
 
 
+class LoginRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    email: EmailStr = Field(..., description="Email to log in with")
+    password: str = Field(..., description="Password to log in with")
+
+
 class ConfirmEmailRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 

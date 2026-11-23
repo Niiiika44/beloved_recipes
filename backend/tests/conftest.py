@@ -17,7 +17,7 @@ from app.core.config import get_settings
 from app.core.db import dispose_engine, get_engine, get_session_factory
 from app.core.redis import close_redis, get_redis
 from app.main import create_app
-from app.modules.identity.routes.dependencies import get_password_hasher
+from app.modules.identity.infrastructure.argon2_password_hasher import Argon2PasswordHasher
 
 REDIS_TEST_PASSWORD = "test-redis-password"
 ALEMBIC_INI = Path(__file__).resolve().parents[1] / "alembic.ini"
@@ -99,9 +99,10 @@ async def app(migrated_schema: None, _point_redis_at_container: None) -> AsyncIt
     get_engine.cache_clear()
     get_session_factory.cache_clear()
     get_redis.cache_clear()
-    get_password_hasher.cache_clear()
+    get_session_factory()
     await get_redis().flushdb()
     application = create_app()
+    application.state.password_hasher = Argon2PasswordHasher()
 
     yield application
 
@@ -110,7 +111,6 @@ async def app(migrated_schema: None, _point_redis_at_container: None) -> AsyncIt
         await connection.execute(text("TRUNCATE users, workspaces, memberships, invites CASCADE"))
     await dispose_engine()
     await close_redis()
-    get_password_hasher.cache_clear()
 
 
 @pytest.fixture
