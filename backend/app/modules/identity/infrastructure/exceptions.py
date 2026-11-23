@@ -7,3 +7,7 @@ class SessionStoreUnavailableError(DependencyUnavailableError):
 
 class RateLimiterUnavailableError(DependencyUnavailableError):
     pass
+
+
+class OneTimeTokenStoreUnavailableError(DependencyUnavailableError):
+    pass

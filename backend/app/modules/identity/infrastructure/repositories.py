@@ -1,11 +1,12 @@
 from collections.abc import Collection
+from datetime import timedelta
 from uuid import UUID
 
-from sqlalchemy import delete, func, select, text, update
+from sqlalchemy import delete, func, or_, select, text, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.modules.identity.domain.enums import EmailPurpose
+from app.modules.identity.domain.enums import EmailJobStatus, EmailPurpose
 from app.modules.identity.infrastructure.models import (
     EmailJob,
     Membership,
@@ -14,7 +15,12 @@ from app.modules.identity.infrastructure.models import (
     User,
     Workspace,
 )
-from app.modules.identity.service.dto import MembershipDTO, ReleasedNicknameDTO, UserDTO
+from app.modules.identity.service.dto import (
+    EmailJobDTO,
+    MembershipDTO,
+    ReleasedNicknameDTO,
+    UserDTO,
+)
 
 NICKNAME_LOCK_SPACE = 1
 
@@ -38,6 +44,7 @@ class SqlUserRepository:
             display_name=user.display_name,
             avatar_url=user.avatar_url,
             nickname=user.nickname,
+            email_verified_at=user.email_verified_at,
         )
 
     async def _fetch(self, user_id: UUID, *, for_update: bool) -> UserDTO | None:
@@ -79,6 +86,14 @@ class SqlUserRepository:
         result = await self._session.execute(query)
         user = result.scalar_one_or_none()
         return self._to_dto(user)
+
+    async def mark_email_verified(self, user_id: UUID) -> None:
+        query = (
+            update(User)
+            .where(User.id == user_id, User.email_verified_at.is_(None))
+            .values(email_verified_at=func.now())
+        )
+        await self._session.execute(query)
 
 
 class SqlNicknameRepository:
@@ -130,6 +145,12 @@ class SqlNicknameRepository:
         )
         await self._session.execute(query_quarantine_update)
 
+    async def purge_released(self, older_than: timedelta) -> None:
+        query = delete(ReleasedNickname).where(
+            ReleasedNickname.released_at < func.now() - older_than
+        )
+        await self._session.execute(query)
+
 
 class SqlPasswordRepository:
     def __init__(self, session: AsyncSession):
@@ -159,5 +180,73 @@ class SqlEmailJobRepository:
                 index_elements=[EmailJob.user_id, EmailJob.purpose],
                 index_where=text("status = 'pending'"),
             )
+        )
+        await self._session.execute(query)
+
+    async def claim(self, batch: int, lease: timedelta) -> list[EmailJobDTO]:
+        query_select = (
+            select(EmailJob.id)
+            .where(
+                text("status = 'pending'"),
+                EmailJob.available_at <= func.now(),
+                or_(EmailJob.locked_until.is_(None), EmailJob.locked_until < func.now()),
+            )
+            .limit(batch)
+            .with_for_update(skip_locked=True)
+            .order_by(EmailJob.available_at)
+        )
+        query_update = (
+            update(EmailJob)
+            .where(EmailJob.id.in_(query_select))
+            .values(
+                attempts=EmailJob.attempts + 1,
+                locked_until=func.now() + lease,
+                updated_at=func.now(),
+            )
+            .returning(EmailJob.id, EmailJob.user_id, EmailJob.purpose, EmailJob.attempts)
+        )
+        result = await self._session.execute(query_update)
+        email_jobs = result.all()
+        return [
+            EmailJobDTO(
+                id=email.id, user_id=email.user_id, purpose=email.purpose, attempts=email.attempts
+            )
+            for email in email_jobs
+        ]
+
+    async def complete(self, job_id: UUID) -> None:
+        query = delete(EmailJob).where(EmailJob.id == job_id)
+        await self._session.execute(query)
+
+    async def retry(self, job_id: UUID, delay: timedelta, error: str) -> None:
+        query = (
+            update(EmailJob)
+            .where(EmailJob.id == job_id)
+            .values(
+                locked_until=None,
+                last_error=error,
+                available_at=func.now() + delay,
+                updated_at=func.now(),
+            )
+        )
+        await self._session.execute(query)
+
+    async def fail(self, job_id: UUID, error: str) -> None:
+        query = (
+            update(EmailJob)
+            .where(EmailJob.id == job_id)
+            .values(
+                locked_until=None,
+                last_error=error,
+                status=EmailJobStatus.FAILED,
+                updated_at=func.now(),
+            )
+        )
+        await self._session.execute(query)
+
+    async def purge_failed(self, older_than: timedelta) -> None:
+        query = delete(EmailJob).where(
+            EmailJob.status == EmailJobStatus.FAILED,
+            EmailJob.updated_at < func.now() - older_than,
         )
         await self._session.execute(query)

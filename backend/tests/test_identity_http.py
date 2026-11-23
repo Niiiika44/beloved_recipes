@@ -769,6 +769,7 @@ async def test_patch_by_user_deleted_after_authentication_is_401(
         email=user.email,
         display_name=user.display_name,
         avatar_url=None,
+        email_verified_at=None,
     )
     await _delete_user(user.id)
     app.dependency_overrides[get_current_user] = lambda: stale

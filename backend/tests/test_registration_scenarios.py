@@ -12,13 +12,13 @@ from fakes import (
 )
 
 from app.core.exceptions import DependencyUnavailableError, RateLimitedError
+from app.modules.identity.domain.emails import email_fingerprint
 from app.modules.identity.domain.enums import EmailPurpose
 from app.modules.identity.domain.exceptions import InvalidDisplayNameError, WeakPasswordError
 from app.modules.identity.domain.limits import (
     REGISTRATION_EMAIL_LIMIT,
     REGISTRATION_IP_LIMIT,
     RateLimit,
-    email_fingerprint,
 )
 from app.modules.identity.service.dto import RegistrationDTO, UserDTO
 from app.modules.identity.service.registration import RegistrationService

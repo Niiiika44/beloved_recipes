@@ -68,6 +68,7 @@ async def test_get_returns_user_dto(session: AsyncSession) -> None:
         email=user.email,
         display_name=user.display_name,
         avatar_url=user.avatar_url,
+        email_verified_at=None,
     )
 
 

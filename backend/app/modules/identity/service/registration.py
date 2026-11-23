@@ -1,10 +1,10 @@
 from app.core.exceptions import RateLimitedError
+from app.modules.identity.domain.emails import email_fingerprint
 from app.modules.identity.domain.enums import EmailPurpose
 from app.modules.identity.domain.exceptions import WeakPasswordError
 from app.modules.identity.domain.limits import (
     REGISTRATION_EMAIL_LIMIT,
     REGISTRATION_IP_LIMIT,
-    email_fingerprint,
 )
 from app.modules.identity.domain.passwords import normalize_password
 from app.modules.identity.domain.profile import normalize_display_name

@@ -7,7 +7,18 @@ from pydantic import ValidationError
 
 from app.core.config import Settings, get_settings
 
-SECTIONS = ("APP", "DB", "REDIS", "SECURITY", "SESSION", "RATE_LIMIT", "GOOGLE", "MAIL")
+SECTIONS = (
+    "APP",
+    "DB",
+    "REDIS",
+    "SECURITY",
+    "SESSION",
+    "RATE_LIMIT",
+    "TOKEN",
+    "GOOGLE",
+    "MAIL",
+    "MAIL_WORKER",
+)
 
 REQUIRED_ENV = {
     "DB__USER": "recipes",
@@ -310,6 +321,64 @@ def test_non_positive_rate_limit_timeout_is_rejected(
 def test_typo_inside_rate_limit_section_is_rejected(monkeypatch: pytest.MonkeyPatch) -> None:
     with pytest.raises(ValidationError):
         _build(monkeypatch, RATE_LIMIT__OPERATION_TIMEOUT="0.5")
+
+
+def test_token_section_is_optional_and_has_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
+    settings = _build(monkeypatch)
+
+    assert settings.token.operation_timeout_seconds == 1.0
+
+
+def test_token_values_are_read_from_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    settings = _build(monkeypatch, TOKEN__OPERATION_TIMEOUT_SECONDS="0.25")
+
+    assert settings.token.operation_timeout_seconds == 0.25
+
+
+def test_mail_worker_section_is_optional_and_has_defaults(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = _build(monkeypatch)
+
+    assert settings.mail_worker.poll_interval_seconds == 2.0
+    assert settings.mail_worker.batch_size == 10
+    assert settings.mail_worker.lease_seconds == 300.0
+
+
+def test_mail_worker_values_are_read_from_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    settings = _build(
+        monkeypatch,
+        MAIL_WORKER__POLL_INTERVAL_SECONDS="0.5",
+        MAIL_WORKER__BATCH_SIZE="3",
+        MAIL_WORKER__LEASE_SECONDS="120",
+    )
+
+    assert settings.mail_worker.poll_interval_seconds == 0.5
+    assert settings.mail_worker.batch_size == 3
+    assert settings.mail_worker.lease_seconds == 120
+
+
+@pytest.mark.parametrize(
+    ("key", "value"),
+    [
+        ("TOKEN__OPERATION_TIMEOUT_SECONDS", "0"),
+        ("MAIL_WORKER__POLL_INTERVAL_SECONDS", "0"),
+        ("MAIL_WORKER__BATCH_SIZE", "0"),
+        ("MAIL_WORKER__BATCH_SIZE", "-1"),
+        ("MAIL_WORKER__LEASE_SECONDS", "0"),
+    ],
+)
+def test_non_positive_mail_values_are_rejected(
+    monkeypatch: pytest.MonkeyPatch, key: str, value: str
+) -> None:
+    with pytest.raises(ValidationError):
+        _build(monkeypatch, **{key: value})
+
+
+@pytest.mark.parametrize("key", ["TOKEN__OPERATION_TIMEOUT", "MAIL_WORKER__BATCH"])
+def test_typo_inside_mail_sections_is_rejected(monkeypatch: pytest.MonkeyPatch, key: str) -> None:
+    with pytest.raises(ValidationError):
+        _build(monkeypatch, **{key: "1"})
 
 
 def test_public_base_url_defaults_to_local_origin(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -11,6 +11,7 @@ from app.core.db import get_session_factory
 from app.core.redis import get_redis
 from app.modules.identity.infrastructure.argon2_password_hasher import Argon2PasswordHasher
 from app.modules.identity.infrastructure.pwned_passwords_checker import PwnedPasswordsChecker
+from app.modules.identity.infrastructure.redis_one_time_token_store import RedisOneTimeTokenStore
 from app.modules.identity.infrastructure.redis_rate_limiter import RedisRateLimiter
 from app.modules.identity.infrastructure.redis_session_store import RedisSessionStore
 from app.modules.identity.infrastructure.structlog_security_events import StructlogSecurityEvents
@@ -20,6 +21,7 @@ from app.modules.identity.service.dto import UserDTO
 from app.modules.identity.service.nicknames import ensure_nickname
 from app.modules.identity.service.ports import (
     BreachedPasswordChecker,
+    OneTimeTokenStore,
     PasswordHasher,
     RateLimiter,
     SecurityEvents,
@@ -48,6 +50,15 @@ def get_rate_limiter(
 ) -> RateLimiter:
     return RedisRateLimiter(
         client=client, operation_timeout_seconds=settings.rate_limit.operation_timeout_seconds
+    )
+
+
+def get_one_time_token_store(
+    client: Annotated[Redis, Depends(get_redis)],
+    settings: Annotated[Settings, Depends(get_settings)],
+) -> OneTimeTokenStore:
+    return RedisOneTimeTokenStore(
+        client=client, operation_timeout_seconds=settings.token.operation_timeout_seconds
     )
 
 

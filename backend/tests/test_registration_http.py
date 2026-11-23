@@ -20,7 +20,7 @@ from app.core.config import get_settings
 from app.core.db import get_engine
 from app.core.models import Base
 from app.core.redis import get_redis
-from app.modules.identity.domain.limits import email_fingerprint
+from app.modules.identity.domain.emails import email_fingerprint
 from app.modules.identity.infrastructure.models import EmailJob, PasswordCredential, User
 from app.modules.identity.infrastructure.pwned_passwords_checker import PwnedPasswordsChecker
 from app.modules.identity.infrastructure.redis_rate_limiter import RedisRateLimiter

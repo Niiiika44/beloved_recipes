@@ -1,7 +1,7 @@
 APP_PORT=8000
 
 help:
-	@echo "Available targets: up, down, migrate, run, test, lint."
+	@echo "Available targets: up, down, migrate, run, test, lint, mailer."
 
 up:
 	docker compose -f infra/docker-compose.yml up -d --wait
@@ -18,5 +18,6 @@ lint:
 	uv run --directory backend ruff check .
 	uv run --directory backend ruff format --check
 	uv run --directory backend mypy app tests
-
-.PHONY: up down migrate run test lint
+mailer:
+	uv run --directory backend python -m app.workers.mailer
+.PHONY: up down migrate run test lint mailer

@@ -17,6 +17,7 @@ from app.core.exceptions import (
     NotAuthenticatedError,
     PermissionDeniedError,
 )
+from app.modules.identity.domain.emails import email_fingerprint
 from app.modules.identity.domain.enums import LoginMethod, TokenPurpose
 from app.modules.identity.domain.exceptions import (
     DisplayNameProblem,
@@ -38,8 +39,15 @@ from app.modules.identity.domain.limits import (
     NICKNAME_CHECK_LIMIT,
     REGISTRATION_EMAIL_LIMIT,
     REGISTRATION_IP_LIMIT,
+    RESEND_CONFIRMATION_EMAIL_LIMIT,
+    RESEND_CONFIRMATION_IP_LIMIT,
     RateLimit,
-    email_fingerprint,
+)
+from app.modules.identity.domain.mail import (
+    EMAIL_CONFIRM_TOKEN_TTL,
+    FAILED_MAIL_RETENTION,
+    MAIL_MAX_ATTEMPTS,
+    retry_delay,
 )
 from app.modules.identity.domain.nicknames import (
     NICKNAME_QUARANTINE,
@@ -202,6 +210,41 @@ def test_registration_email_limit_is_five_per_hour() -> None:
 
 def test_registration_ip_limit_is_twenty_per_hour() -> None:
     assert RateLimit(limit=20, window=timedelta(hours=1)) == REGISTRATION_IP_LIMIT
+
+
+def test_resend_confirmation_email_limit_is_five_per_hour() -> None:
+    assert RateLimit(limit=5, window=timedelta(hours=1)) == RESEND_CONFIRMATION_EMAIL_LIMIT
+
+
+def test_resend_confirmation_ip_limit_is_twenty_per_hour() -> None:
+    assert RateLimit(limit=20, window=timedelta(hours=1)) == RESEND_CONFIRMATION_IP_LIMIT
+
+
+def test_confirmation_link_lives_a_day() -> None:
+    assert timedelta(hours=24) == EMAIL_CONFIRM_TOKEN_TTL
+
+
+def test_mail_gives_up_after_eight_attempts() -> None:
+    assert MAIL_MAX_ATTEMPTS == 8
+
+
+def test_failed_mail_is_kept_for_thirty_days() -> None:
+    assert timedelta(days=30) == FAILED_MAIL_RETENTION
+
+
+@pytest.mark.parametrize(
+    ("attempts", "delay"),
+    [
+        (1, timedelta(seconds=30)),
+        (2, timedelta(minutes=1)),
+        (3, timedelta(minutes=2)),
+        (7, timedelta(minutes=32)),
+        (8, timedelta(hours=1)),
+        (20, timedelta(hours=1)),
+    ],
+)
+def test_retry_delay_doubles_up_to_an_hour(attempts: int, delay: timedelta) -> None:
+    assert retry_delay(attempts) == delay
 
 
 FINGERPRINT_SECRET = b"fingerprint-secret"

@@ -38,3 +38,15 @@ class RegisterRequest(BaseModel):
     email: EmailStr = Field(..., description="Email to sign in with")
     password: str = Field(..., description="Password, 8 to 128 characters")
     display_name: str = Field(..., description="Name shown to other users")
+
+
+class ConfirmEmailRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    token: str = Field(..., description="Token from the confirmation link")
+
+
+class ResendConfirmationRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    email: EmailStr = Field(..., description="Email to send the confirmation to again")

@@ -1,11 +1,18 @@
 from collections.abc import Collection
+from datetime import timedelta
 from types import TracebackType
 from typing import Protocol, Self
 from uuid import UUID
 
-from app.modules.identity.domain.enums import EmailPurpose
+from app.modules.identity.domain.enums import EmailPurpose, TokenPurpose
 from app.modules.identity.domain.limits import RateLimit
-from app.modules.identity.service.dto import MembershipDTO, ReleasedNicknameDTO, SessionDTO, UserDTO
+from app.modules.identity.service.dto import (
+    EmailJobDTO,
+    MembershipDTO,
+    ReleasedNicknameDTO,
+    SessionDTO,
+    UserDTO,
+)
 
 
 class SessionStore(Protocol):
@@ -27,6 +34,8 @@ class UserRepository(Protocol):
 
     async def find_by_email(self, email: str) -> UserDTO | None: ...
 
+    async def mark_email_verified(self, user_id: UUID) -> None: ...
+
 
 class NicknameRepository(Protocol):
     async def lock(self, nicknames: Collection[str]) -> None: ...
@@ -37,6 +46,8 @@ class NicknameRepository(Protocol):
 
     async def change(self, user_id: UUID, current: str | None, new: str) -> None: ...
 
+    async def purge_released(self, older_than: timedelta) -> None: ...
+
 
 class PasswordRepository(Protocol):
     async def set_hash(self, user_id: UUID, password_hash: str) -> None: ...
@@ -44,6 +55,16 @@ class PasswordRepository(Protocol):
 
 class EmailJobRepository(Protocol):
     async def enqueue(self, purpose: EmailPurpose, user_id: UUID) -> None: ...
+
+    async def claim(self, batch: int, lease: timedelta) -> list[EmailJobDTO]: ...
+
+    async def complete(self, job_id: UUID) -> None: ...
+
+    async def retry(self, job_id: UUID, delay: timedelta, error: str) -> None: ...
+
+    async def fail(self, job_id: UUID, error: str) -> None: ...
+
+    async def purge_failed(self, older_than: timedelta) -> None: ...
 
 
 class UnitOfWork(Protocol):
@@ -80,3 +101,17 @@ class SecurityEvents(Protocol):
     def rate_limited(self, action: str, scope: str) -> None: ...
 
     def breach_check_unavailable(self) -> None: ...
+
+    def email_confirmed(self, user_id: UUID) -> None: ...
+
+
+class OneTimeTokenStore(Protocol):
+    async def issue(self, purpose: TokenPurpose, user_id: UUID, ttl: timedelta) -> str: ...
+
+    async def consume(self, purpose: TokenPurpose, token: str) -> UUID | None: ...
+
+
+class Mailer(Protocol):
+    async def send(
+        self, recipient: str, recipient_name: str, purpose: EmailPurpose, link: str | None
+    ) -> None: ...

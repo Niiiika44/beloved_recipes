@@ -2,7 +2,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from uuid import UUID
 
-from app.modules.identity.domain.enums import WorkspaceRole
+from app.modules.identity.domain.enums import EmailPurpose, WorkspaceRole
 
 
 @dataclass(frozen=True, slots=True)
@@ -18,6 +18,7 @@ class UserDTO:
     email: str
     display_name: str
     avatar_url: str | None
+    email_verified_at: datetime | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -56,4 +57,18 @@ class RegistrationDTO:
     email: str
     password: str = field(repr=False)
     display_name: str
+    client_ip: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class EmailJobDTO:
+    id: UUID
+    user_id: UUID
+    purpose: EmailPurpose
+    attempts: int
+
+
+@dataclass(frozen=True, slots=True)
+class ResendConfirmationDTO:
+    email: str
     client_ip: str | None

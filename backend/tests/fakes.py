@@ -1,11 +1,17 @@
 import uuid
 from collections.abc import Collection, Iterable
+from datetime import timedelta
 from types import TracebackType
 from typing import Self
 
-from app.modules.identity.domain.enums import EmailPurpose
+from app.modules.identity.domain.enums import EmailPurpose, TokenPurpose
 from app.modules.identity.domain.limits import RateLimit
-from app.modules.identity.service.dto import MembershipDTO, ReleasedNicknameDTO, UserDTO
+from app.modules.identity.service.dto import (
+    EmailJobDTO,
+    MembershipDTO,
+    ReleasedNicknameDTO,
+    UserDTO,
+)
 from app.modules.identity.service.ports import (
     EmailJobRepository,
     NicknameRepository,
@@ -21,6 +27,7 @@ def make_user(name: str = "Cook", nickname: str | None = None) -> UserDTO:
         email=f"{name.lower()}@example.com",
         display_name=name,
         avatar_url=None,
+        email_verified_at=None,
     )
 
 
@@ -50,6 +57,7 @@ class FakeUsers:
             email=email,
             display_name=display_name,
             avatar_url=None,
+            email_verified_at=None,
         )
         self._uow.stored[user.id] = user
         self._uow.created.append(user)
@@ -58,6 +66,10 @@ class FakeUsers:
     async def find_by_email(self, email: str) -> UserDTO | None:
         self._uow.record("find_by_email")
         return self._uow.find_email(email)
+
+    async def mark_email_verified(self, user_id: uuid.UUID) -> None:
+        self._uow.record("mark_email_verified")
+        self._uow.verified.append(user_id)
 
 
 class FakeNicknames:
@@ -81,6 +93,10 @@ class FakeNicknames:
         self._uow.record("change")
         self._uow.changes.append((user_id, current, new))
 
+    async def purge_released(self, older_than: timedelta) -> None:
+        self._uow.record("purge_released")
+        self._uow.purged.append(("released_nicknames", older_than))
+
 
 class FakePasswords:
     def __init__(self, uow: FakeUnitOfWork) -> None:
@@ -98,6 +114,29 @@ class FakeEmailJobs:
     async def enqueue(self, purpose: EmailPurpose, user_id: uuid.UUID) -> None:
         self._uow.record("enqueue")
         self._uow.jobs.append((purpose, user_id))
+
+    async def claim(self, batch: int, lease: timedelta) -> list[EmailJobDTO]:
+        self._uow.record("claim")
+        self._uow.claims.append((batch, lease))
+        taken = self._uow.queued[:batch]
+        del self._uow.queued[:batch]
+        return taken
+
+    async def complete(self, job_id: uuid.UUID) -> None:
+        self._uow.record("complete")
+        self._uow.outcomes.append(("complete", job_id, None, None))
+
+    async def retry(self, job_id: uuid.UUID, delay: timedelta, error: str) -> None:
+        self._uow.record("retry")
+        self._uow.outcomes.append(("retry", job_id, delay, error))
+
+    async def fail(self, job_id: uuid.UUID, error: str) -> None:
+        self._uow.record("fail")
+        self._uow.outcomes.append(("fail", job_id, None, error))
+
+    async def purge_failed(self, older_than: timedelta) -> None:
+        self._uow.record("purge_failed")
+        self._uow.purged.append(("email_jobs", older_than))
 
 
 class FakeUnitOfWork:
@@ -123,6 +162,11 @@ class FakeUnitOfWork:
         self.created: list[UserDTO] = []
         self.password_hashes: dict[uuid.UUID, str] = {}
         self.jobs: list[tuple[EmailPurpose, uuid.UUID]] = []
+        self.verified: list[uuid.UUID] = []
+        self.purged: list[tuple[str, timedelta]] = []
+        self.queued: list[EmailJobDTO] = []
+        self.claims: list[tuple[int, timedelta]] = []
+        self.outcomes: list[tuple[str, uuid.UUID, timedelta | None, str | None]] = []
         self.users = FakeUsers(self)
         self.nicknames = FakeNicknames(self)
         self.passwords = FakePasswords(self)
@@ -210,3 +254,47 @@ class FakeEvents:
 
     def breach_check_unavailable(self) -> None:
         self.recorded.append(("breach_check_unavailable",))
+
+    def email_confirmed(self, user_id: uuid.UUID) -> None:
+        self.recorded.append(("email_confirmed", str(user_id)))
+
+
+class FakeTokens:
+    def __init__(self, uow: FakeUnitOfWork | None = None, failure: Exception | None = None) -> None:
+        self.uow = uow
+        self.failure = failure
+        self.issued: list[tuple[TokenPurpose, uuid.UUID, timedelta, str]] = []
+        self.live: dict[tuple[TokenPurpose, str], uuid.UUID] = {}
+
+    async def issue(self, purpose: TokenPurpose, user_id: uuid.UUID, ttl: timedelta) -> str:
+        if self.uow is not None:
+            self.uow.calls.append("issue")
+        if self.failure is not None:
+            raise self.failure
+        token = f"token-{len(self.issued) + 1}"
+        self.issued.append((purpose, user_id, ttl, token))
+        self.live[(purpose, token)] = user_id
+        return token
+
+    async def consume(self, purpose: TokenPurpose, token: str) -> uuid.UUID | None:
+        return self.live.pop((purpose, token), None)
+
+
+class FakeMailer:
+    def __init__(
+        self, uow: FakeUnitOfWork | None = None, failures: Iterable[Exception] = ()
+    ) -> None:
+        self.uow = uow
+        self.failures = list(failures)
+        self.sent: list[tuple[str, str, EmailPurpose, str | None]] = []
+        self.sent_inside_uow: list[bool] = []
+
+    async def send(
+        self, recipient: str, recipient_name: str, purpose: EmailPurpose, link: str | None
+    ) -> None:
+        if self.uow is not None:
+            self.uow.calls.append("send")
+            self.sent_inside_uow.append(self.uow.active)
+        if self.failures:
+            raise self.failures.pop(0)
+        self.sent.append((recipient, recipient_name, purpose, link))

@@ -81,6 +81,10 @@ class RateLimitSection(_Section):
     operation_timeout_seconds: float = Field(1.0, gt=0)
 
 
+class TokenSection(_Section):
+    operation_timeout_seconds: float = Field(1.0, gt=0)
+
+
 class GoogleSection(_Section):
     client_id: str
     client_secret: SecretStr
@@ -110,6 +114,12 @@ class MailSection(_Section):
         if self.username is not None and self.password is None:
             raise ValueError("MAIL__PASSWORD should not be empty")
         return self
+
+
+class MailWorkerSection(_Section):
+    poll_interval_seconds: float = Field(2.0, gt=0)
+    batch_size: int = Field(10, gt=0)
+    lease_seconds: float = Field(300.0, gt=0)
 
 
 class DatabaseSection(_Section):
@@ -167,10 +177,12 @@ class Settings(BaseSettings):
     db: DatabaseSection
     session: SessionSection = Field(default_factory=SessionSection)
     rate_limit: RateLimitSection = Field(default_factory=RateLimitSection)
+    token: TokenSection = Field(default_factory=TokenSection)
     redis: RedisSection
     security: SecuritySection
     google: GoogleSection
     mail: MailSection = Field(default_factory=MailSection)
+    mail_worker: MailWorkerSection = Field(default_factory=MailWorkerSection)
 
     @model_validator(mode="after")
     def _validate_prod_requirements(self) -> Self:
