@@ -8,6 +8,7 @@ from app.modules.identity.domain.enums import EmailPurpose, TokenPurpose
 from app.modules.identity.domain.mail import (
     EMAIL_CONFIRM_TOKEN_TTL,
     MAIL_MAX_ATTEMPTS,
+    PASSWORD_RESET_TOKEN_TTL,
     retry_delay,
 )
 from app.modules.identity.service.dto import EmailJobDTO, UserDTO
@@ -21,6 +22,7 @@ logger = structlog.get_logger(__name__)
 
 CONFIRM_PATH = "/auth/confirm"
 FORGOT_PATH = "/auth/forgot"
+RESET_PATH = "/auth/reset"
 
 
 @dataclass(frozen=True, slots=True)
@@ -35,6 +37,9 @@ LETTERS: dict[EmailPurpose, _Letter] = {
         CONFIRM_PATH, TokenPurpose.EMAIL_CONFIRM, EMAIL_CONFIRM_TOKEN_TTL
     ),
     EmailPurpose.ALREADY_REGISTERED: _Letter(FORGOT_PATH),
+    EmailPurpose.PASSWORD_RESET: _Letter(
+        RESET_PATH, TokenPurpose.PASSWORD_RESET, PASSWORD_RESET_TOKEN_TTL
+    ),
 }
 
 
@@ -106,7 +111,10 @@ class MailDeliveryService:
         if letter.token_purpose is None or letter.token_ttl is None:
             return url
         token = await self._tokens.issue(
-            purpose=letter.token_purpose, user_id=user.id, ttl=letter.token_ttl
+            purpose=letter.token_purpose,
+            user_id=user.id,
+            ttl=letter.token_ttl,
+            credentials_version=user.credentials_version,
         )
         return f"{url}#token={token}"
 

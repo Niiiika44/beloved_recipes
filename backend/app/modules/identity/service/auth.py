@@ -11,7 +11,7 @@ async def authenticate(token: str | None, store: SessionStore, uow: UnitOfWork) 
         raise InvalidSessionError
     async with uow:
         user = await uow.users.get(session.user_id)
-    if user is None:
+    if user is None or session.credentials_version != user.credentials_version:
         await store.revoke(token)
         raise InvalidSessionError
     return user

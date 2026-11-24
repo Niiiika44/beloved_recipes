@@ -8,12 +8,13 @@ from fakes import FakeMailer, FakeTokens, FakeUnitOfWork, make_user
 
 from app.core.exceptions import DependencyUnavailableError
 from app.modules.identity.domain.enums import EmailPurpose, TokenPurpose
+from app.modules.identity.infrastructure.smtp_mailer import TEMPLATES
 from app.modules.identity.service.dto import EmailJobDTO, UserDTO
 from app.modules.identity.service.exceptions import (
     MailDeliveryPermanentError,
     MailDeliveryTemporaryError,
 )
-from app.modules.identity.service.mail_delivery import MailDeliveryService
+from app.modules.identity.service.mail_delivery import LETTERS, MailDeliveryService
 
 BASE_URL = "https://recipes.example"
 LEASE = timedelta(minutes=5)
@@ -178,15 +179,64 @@ async def test_job_over_the_attempt_limit_fails_before_sending() -> None:
     assert world.uow.outcomes == [("fail", job.id, None, "attempts_exhausted")]
 
 
-async def test_purpose_without_a_letter_fails() -> None:
+async def test_purpose_without_a_letter_fails(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delitem(LETTERS, EmailPurpose.ALREADY_REGISTERED)
     anna = _anna()
     world = World(anna)
-    job = world.queue(anna, EmailPurpose.PASSWORD_RESET)
+    job = world.queue(anna, EmailPurpose.ALREADY_REGISTERED)
 
     await world.service.deliver_batch()
 
     assert world.mailer.sent == []
     assert world.uow.outcomes == [("fail", job.id, None, "unsupported_purpose")]
+
+
+def test_every_purpose_has_a_letter_and_a_template() -> None:
+    for purpose in EmailPurpose:
+        assert purpose in LETTERS
+        assert (TEMPLATES / f"{purpose.value}.txt").is_file()
+
+
+async def test_password_reset_is_sent_with_a_one_hour_token_link() -> None:
+    anna = replace(_anna(verified=True), credentials_version=4)
+    world = World(anna)
+    job = world.queue(anna, EmailPurpose.PASSWORD_RESET)
+
+    await world.service.deliver_batch()
+
+    assert world.tokens.issued == [
+        (TokenPurpose.PASSWORD_RESET, anna.id, timedelta(hours=1), "token-1")
+    ]
+    assert world.tokens.versions == [4]
+    assert world.mailer.sent == [
+        (
+            "anna@example.org",
+            anna.display_name,
+            EmailPurpose.PASSWORD_RESET,
+            f"{BASE_URL}/auth/reset#token=token-1",
+        )
+    ]
+    assert world.uow.outcomes == [("complete", job.id, None, None)]
+
+
+async def test_password_reset_reaches_an_unverified_account_too() -> None:
+    anna = _anna(verified=False)
+    world = World(anna)
+    world.queue(anna, EmailPurpose.PASSWORD_RESET)
+
+    await world.service.deliver_batch()
+
+    assert [letter[2] for letter in world.mailer.sent] == [EmailPurpose.PASSWORD_RESET]
+
+
+async def test_confirmation_token_carries_the_current_credentials_version() -> None:
+    anna = replace(_anna(), credentials_version=2)
+    world = World(anna)
+    world.queue(anna)
+
+    await world.service.deliver_batch()
+
+    assert world.tokens.versions == [2]
 
 
 async def test_token_store_outage_is_retried() -> None:

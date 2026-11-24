@@ -22,9 +22,10 @@ UNKNOWN_IP = "unknown"
 async def confirm_email(
     token: str, tokens: OneTimeTokenStore, uow: UnitOfWork, events: SecurityEvents
 ) -> None:
-    user_id = await tokens.consume(TokenPurpose.EMAIL_CONFIRM, token)
-    if user_id is None:
+    user_token = await tokens.consume(TokenPurpose.EMAIL_CONFIRM, token)
+    if user_token is None:
         raise InvalidTokenError()
+    user_id = user_token.user_id
     async with uow:
         await uow.users.mark_email_verified(user_id=user_id)
         await uow.commit()

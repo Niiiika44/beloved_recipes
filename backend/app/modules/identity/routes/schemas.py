@@ -57,3 +57,23 @@ class ResendConfirmationRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     email: EmailStr = Field(..., description="Email to send the confirmation to again")
+
+
+class PasswordForgotRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    email: EmailStr = Field(..., description="Email to send the reset password link")
+
+
+class PasswordResetRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    token: str = Field(..., description="Token from the reset link")
+    password: str = Field(..., description="New password to log in with")
+
+
+class PasswordChangeRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    current_password: str = Field(..., description="User's current password")
+    new_password: str = Field(..., description="New password to log in with")

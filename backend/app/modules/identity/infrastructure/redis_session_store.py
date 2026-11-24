@@ -46,10 +46,14 @@ class RedisSessionStore:
         except (TimeoutError, RedisTimeoutError, RedisConnectionError) as exc:
             raise SessionStoreUnavailableError("Session store is unavailable") from exc
 
-    async def create(self, user_id: UUID) -> str:
+    async def create(self, user_id: UUID, credentials_version: int) -> str:
         token = secrets.token_urlsafe(32)
         key = self._calc_key(token)
-        value = {"user_id": str(user_id), "created_at": self._now().isoformat()}
+        value = {
+            "user_id": str(user_id),
+            "created_at": self._now().isoformat(),
+            "credentials_version": credentials_version,
+        }
         async with self._guard():
             await self._client.set(key, json.dumps(value), ex=self._idle_ttl_seconds)
         return token
@@ -70,6 +74,7 @@ class RedisSessionStore:
         return SessionDTO(
             user_id=UUID(value_dct["user_id"]),
             created_at=created_at,
+            credentials_version=value_dct["credentials_version"],
         )
 
     async def revoke(self, token: str) -> None:

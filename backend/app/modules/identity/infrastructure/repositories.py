@@ -45,6 +45,7 @@ class SqlUserRepository:
             avatar_url=user.avatar_url,
             nickname=user.nickname,
             email_verified_at=user.email_verified_at,
+            credentials_version=user.credentials_version,
         )
 
     async def _fetch(self, user_id: UUID, *, for_update: bool) -> UserDTO | None:
@@ -94,6 +95,16 @@ class SqlUserRepository:
             .values(email_verified_at=func.now())
         )
         await self._session.execute(query)
+
+    async def bump_credentials_version(self, user_id: UUID) -> int:
+        query = (
+            update(User)
+            .where(User.id == user_id)
+            .values(credentials_version=User.credentials_version + 1)
+            .returning(User.credentials_version)
+        )
+        result = await self._session.execute(query)
+        return result.scalar_one()
 
 
 class SqlNicknameRepository:

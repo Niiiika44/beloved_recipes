@@ -9,6 +9,7 @@ from app.modules.identity.domain.enums import EmailPurpose, WorkspaceRole
 class SessionDTO:
     user_id: UUID
     created_at: datetime
+    credentials_version: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -19,6 +20,7 @@ class UserDTO:
     display_name: str
     avatar_url: str | None
     email_verified_at: datetime | None
+    credentials_version: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -86,3 +88,27 @@ class LoginDTO:
 class PasswordCheckDTO:
     matches: bool
     needs_rehash: bool
+
+
+@dataclass(frozen=True, slots=True)
+class OneTimeTokenDTO:
+    user_id: UUID
+    credentials_version: int
+
+
+@dataclass(frozen=True, slots=True)
+class PasswordResetRequestDTO:
+    email: str
+    client_ip: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class PasswordResetDTO:
+    token: str = field(repr=False)
+    password: str = field(repr=False)
+
+
+@dataclass(frozen=True, slots=True)
+class PasswordChangeDTO:
+    current: str = field(repr=False)
+    new: str = field(repr=False)

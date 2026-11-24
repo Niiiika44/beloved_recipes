@@ -180,11 +180,34 @@ def test_login_success_event_names_user_and_method() -> None:
 
 
 @pytest.mark.parametrize("reason", ["bad_credentials", "email_not_verified"])
-def test_login_failure_event_carries_only_the_reason(reason: str) -> None:
-    with structlog.testing.capture_logs() as records:
-        StructlogSecurityEvents().login_failed(reason)
+def test_login_failure_event_names_the_account_and_the_reason(reason: str) -> None:
+    user_id = uuid.uuid7()
 
-    assert records == [{"event": "security.login_failed", "reason": reason, "log_level": "info"}]
+    with structlog.testing.capture_logs() as records:
+        StructlogSecurityEvents().login_failed(user_id, reason)
+
+    assert records == [
+        {
+            "event": "security.login_failed",
+            "user_id": str(user_id),
+            "reason": reason,
+            "log_level": "info",
+        }
+    ]
+
+
+def test_login_failure_for_unknown_email_has_no_user() -> None:
+    with structlog.testing.capture_logs() as records:
+        StructlogSecurityEvents().login_failed(None, "bad_credentials")
+
+    assert records == [
+        {
+            "event": "security.login_failed",
+            "user_id": None,
+            "reason": "bad_credentials",
+            "log_level": "info",
+        }
+    ]
 
 
 def test_logout_event_names_the_user() -> None:
@@ -201,3 +224,31 @@ def test_anonymous_logout_event_has_no_user() -> None:
         StructlogSecurityEvents().logout(None)
 
     assert records == [{"event": "security.logout", "user_id": None, "log_level": "info"}]
+
+
+def test_password_reset_events_name_the_account() -> None:
+    user_id = uuid.uuid7()
+
+    with structlog.testing.capture_logs() as records:
+        events = StructlogSecurityEvents()
+        events.password_reset_requested(user_id)
+        events.password_reset_requested(None)
+        events.password_reset_completed(user_id)
+        events.password_changed(user_id)
+        events.reset_token_cleanup_failed()
+
+    assert records == [
+        {
+            "event": "security.password_reset_requested",
+            "user_id": str(user_id),
+            "log_level": "info",
+        },
+        {"event": "security.password_reset_requested", "user_id": None, "log_level": "info"},
+        {
+            "event": "security.password_reset_completed",
+            "user_id": str(user_id),
+            "log_level": "info",
+        },
+        {"event": "security.password_changed", "user_id": str(user_id), "log_level": "info"},
+        {"event": "security.reset_token_cleanup_failed", "log_level": "warning"},
+    ]

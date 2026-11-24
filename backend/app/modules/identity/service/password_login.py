@@ -50,14 +50,16 @@ class PasswordLoginService:
             password_hash = await self._uow.passwords.get_hash(user.id) if user else None
         if user is None or password_hash is None:
             await self._hasher.verify_dummy(password)
-            self._events.login_failed("bad_credentials")
+            self._events.login_failed(
+                user_id=user.id if user is not None else None, reason="bad_credentials"
+            )
             raise InvalidCredentialsError()
         password_verify = await self._hasher.verify(password_hash, password)
         if not password_verify.matches:
-            self._events.login_failed("bad_credentials")
+            self._events.login_failed(user_id=user.id, reason="bad_credentials")
             raise InvalidCredentialsError()
         if user.email_verified_at is None:
-            self._events.login_failed("email_not_verified")
+            self._events.login_failed(user_id=user.id, reason="email_not_verified")
             raise EmailNotVerifiedError()
         if password_verify.needs_rehash:
             password_hash = await self._hasher.hash_password(password)
@@ -66,7 +68,9 @@ class PasswordLoginService:
                 await self._uow.commit()
         if login.current_token is not None:
             await self._sessions.revoke(login.current_token)
-        token = await self._sessions.create(user_id=user.id)
+        token = await self._sessions.create(
+            user_id=user.id, credentials_version=user.credentials_version
+        )
         self._events.login_succeeded(user_id=user.id, method=LoginMethod.PASSWORD)
         return token
 

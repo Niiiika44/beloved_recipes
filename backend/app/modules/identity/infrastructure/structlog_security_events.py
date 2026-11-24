@@ -21,8 +21,24 @@ class StructlogSecurityEvents:
     def login_succeeded(self, user_id: UUID, method: LoginMethod) -> None:
         self._logger.info("security.login_succeeded", user_id=str(user_id), method=method.value)
 
-    def login_failed(self, reason: str) -> None:
-        self._logger.info("security.login_failed", reason=reason)
+    def login_failed(self, user_id: UUID | None, reason: str) -> None:
+        self._logger.info(
+            "security.login_failed", user_id=str(user_id) if user_id else None, reason=reason
+        )
 
     def logout(self, user_id: UUID | None) -> None:
         self._logger.info("security.logout", user_id=str(user_id) if user_id else None)
+
+    def password_reset_requested(self, user_id: UUID | None) -> None:
+        self._logger.info(
+            "security.password_reset_requested", user_id=str(user_id) if user_id else None
+        )
+
+    def password_reset_completed(self, user_id: UUID) -> None:
+        self._logger.info("security.password_reset_completed", user_id=str(user_id))
+
+    def password_changed(self, user_id: UUID) -> None:
+        self._logger.info("security.password_changed", user_id=str(user_id))
+
+    def reset_token_cleanup_failed(self) -> None:
+        self._logger.warning("security.reset_token_cleanup_failed")

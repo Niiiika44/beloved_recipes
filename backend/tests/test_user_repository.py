@@ -1,3 +1,4 @@
+import asyncio
 import uuid
 from collections.abc import AsyncIterator
 from typing import Any
@@ -69,6 +70,7 @@ async def test_get_returns_user_dto(session: AsyncSession) -> None:
         display_name=user.display_name,
         avatar_url=user.avatar_url,
         email_verified_at=None,
+        credentials_version=0,
     )
 
 
@@ -178,3 +180,61 @@ async def test_repository_never_commits(session: AsyncSession) -> None:
 
     remaining = await session.scalar(select(func.count()).select_from(User))
     assert remaining == 0
+
+
+async def _version(session: AsyncSession, user_id: uuid.UUID) -> int:
+    value = await session.scalar(select(User.credentials_version).where(User.id == user_id))
+    assert value is not None
+    return int(value)
+
+
+async def test_bump_increments_the_version_and_returns_it(session: AsyncSession) -> None:
+    user = await _user(session, credentials_version=4)
+
+    returned = await SqlUserRepository(session).bump_credentials_version(user.id)
+
+    assert returned == 5
+    assert await _version(session, user.id) == 5
+
+
+async def test_bump_touches_only_the_given_user(session: AsyncSession) -> None:
+    user = await _user(session)
+    neighbour = await _user(session)
+
+    await SqlUserRepository(session).bump_credentials_version(user.id)
+
+    assert await _version(session, neighbour.id) == 0
+
+
+async def test_dto_carries_the_credentials_version(session: AsyncSession) -> None:
+    user = await _user(session, credentials_version=9)
+
+    found = await SqlUserRepository(session).get(user.id)
+
+    assert found is not None
+    assert found.credentials_version == 9
+
+
+async def test_parallel_bumps_both_count(migrated_schema: None) -> None:
+    get_engine.cache_clear()
+    get_session_factory.cache_clear()
+    factory = get_session_factory()
+    async with factory() as setup:
+        user = await _user(setup)
+        await setup.commit()
+
+    async def bump() -> int:
+        async with factory() as own:
+            new = await SqlUserRepository(own).bump_credentials_version(user.id)
+            await own.commit()
+            return new
+
+    results = await asyncio.gather(bump(), bump())
+
+    async with factory() as check:
+        stored = await _version(check, user.id)
+        await check.delete(await check.get(User, user.id))
+        await check.commit()
+    await dispose_engine()
+    assert sorted(results) == [1, 2]
+    assert stored == 2

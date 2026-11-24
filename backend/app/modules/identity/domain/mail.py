@@ -1,6 +1,7 @@
 from datetime import timedelta
 
 EMAIL_CONFIRM_TOKEN_TTL = timedelta(hours=24)
+PASSWORD_RESET_TOKEN_TTL = timedelta(hours=1)
 MAIL_MAX_ATTEMPTS = 8
 MAIL_RETRY_BASE = timedelta(seconds=30)
 MAIL_RETRY_MAX = timedelta(hours=1)

@@ -1,5 +1,6 @@
 import uuid
 from collections.abc import Collection, Iterable, Mapping
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from types import TracebackType
 from typing import Self
@@ -9,6 +10,7 @@ from app.modules.identity.domain.limits import RateLimit
 from app.modules.identity.service.dto import (
     EmailJobDTO,
     MembershipDTO,
+    OneTimeTokenDTO,
     PasswordCheckDTO,
     ReleasedNicknameDTO,
     SessionDTO,
@@ -30,6 +32,7 @@ def make_user(name: str = "Cook", nickname: str | None = None) -> UserDTO:
         display_name=name,
         avatar_url=None,
         email_verified_at=None,
+        credentials_version=0,
     )
 
 
@@ -60,6 +63,7 @@ class FakeUsers:
             display_name=display_name,
             avatar_url=None,
             email_verified_at=None,
+            credentials_version=0,
         )
         self._uow.stored[user.id] = user
         self._uow.created.append(user)
@@ -72,6 +76,13 @@ class FakeUsers:
     async def mark_email_verified(self, user_id: uuid.UUID) -> None:
         self._uow.record("mark_email_verified")
         self._uow.verified.append(user_id)
+
+    async def bump_credentials_version(self, user_id: uuid.UUID) -> int:
+        self._uow.record("bump_credentials_version")
+        user = self._uow.stored[user_id]
+        bumped = replace(user, credentials_version=user.credentials_version + 1)
+        self._uow.stored[user_id] = bumped
+        return bumped.credentials_version
 
 
 class FakeNicknames:
@@ -295,11 +306,23 @@ class FakeEvents:
     def login_succeeded(self, user_id: uuid.UUID, method: LoginMethod) -> None:
         self.recorded.append(("login_succeeded", str(user_id), method.value))
 
-    def login_failed(self, reason: str) -> None:
-        self.recorded.append(("login_failed", reason))
+    def login_failed(self, user_id: uuid.UUID | None, reason: str) -> None:
+        self.recorded.append(("login_failed", str(user_id) if user_id else "-", reason))
 
     def logout(self, user_id: uuid.UUID | None) -> None:
         self.recorded.append(("logout", str(user_id) if user_id else "-"))
+
+    def password_reset_requested(self, user_id: uuid.UUID | None) -> None:
+        self.recorded.append(("password_reset_requested", str(user_id) if user_id else "-"))
+
+    def password_reset_completed(self, user_id: uuid.UUID) -> None:
+        self.recorded.append(("password_reset_completed", str(user_id)))
+
+    def password_changed(self, user_id: uuid.UUID) -> None:
+        self.recorded.append(("password_changed", str(user_id)))
+
+    def reset_token_cleanup_failed(self) -> None:
+        self.recorded.append(("reset_token_cleanup_failed",))
 
 
 class FakeSessions:
@@ -312,6 +335,7 @@ class FakeSessions:
         self.uow = uow
         self.failure = failure
         self.live = dict(live or {})
+        self.versions: dict[str, int] = {}
         self.created: list[tuple[uuid.UUID, str]] = []
         self.revoked: list[str] = []
         self.order: list[str] = []
@@ -325,11 +349,12 @@ class FakeSessions:
         if self.failure is not None:
             raise self.failure
 
-    async def create(self, user_id: uuid.UUID) -> str:
+    async def create(self, user_id: uuid.UUID, credentials_version: int) -> str:
         self._record("create_session")
         token = f"session-{len(self.created) + 1}"
         self.created.append((user_id, token))
         self.live[token] = user_id
+        self.versions[token] = credentials_version
         return token
 
     async def resolve(self, token: str) -> SessionDTO | None:
@@ -337,7 +362,11 @@ class FakeSessions:
         user_id = self.live.get(token)
         if user_id is None:
             return None
-        return SessionDTO(user_id=user_id, created_at=datetime(2026, 11, 23, tzinfo=UTC))
+        return SessionDTO(
+            user_id=user_id,
+            created_at=datetime(2026, 11, 23, tzinfo=UTC),
+            credentials_version=self.versions.get(token, 0),
+        )
 
     async def revoke(self, token: str) -> None:
         self._record("revoke_session")
@@ -346,23 +375,54 @@ class FakeSessions:
 
 
 class FakeTokens:
-    def __init__(self, uow: FakeUnitOfWork | None = None, failure: Exception | None = None) -> None:
+    def __init__(
+        self,
+        uow: FakeUnitOfWork | None = None,
+        failure: Exception | None = None,
+        peek_failure: Exception | None = None,
+        consume_failure: Exception | None = None,
+    ) -> None:
         self.uow = uow
         self.failure = failure
+        self.peek_failure = peek_failure
+        self.consume_failure = consume_failure
         self.issued: list[tuple[TokenPurpose, uuid.UUID, timedelta, str]] = []
-        self.live: dict[tuple[TokenPurpose, str], uuid.UUID] = {}
+        self.versions: list[int] = []
+        self.live: dict[tuple[TokenPurpose, str], OneTimeTokenDTO] = {}
+        self.consumed: list[tuple[TokenPurpose, str]] = []
 
-    async def issue(self, purpose: TokenPurpose, user_id: uuid.UUID, ttl: timedelta) -> str:
+    def _record(self, call: str) -> None:
         if self.uow is not None:
-            self.uow.calls.append("issue")
+            self.uow.calls.append(call)
+
+    def plant(
+        self, purpose: TokenPurpose, token: str, user_id: uuid.UUID, credentials_version: int
+    ) -> None:
+        self.live[(purpose, token)] = OneTimeTokenDTO(user_id, credentials_version)
+
+    async def issue(
+        self, purpose: TokenPurpose, user_id: uuid.UUID, credentials_version: int, ttl: timedelta
+    ) -> str:
+        self._record("issue")
         if self.failure is not None:
             raise self.failure
         token = f"token-{len(self.issued) + 1}"
         self.issued.append((purpose, user_id, ttl, token))
-        self.live[(purpose, token)] = user_id
+        self.versions.append(credentials_version)
+        self.plant(purpose, token, user_id, credentials_version)
         return token
 
-    async def consume(self, purpose: TokenPurpose, token: str) -> uuid.UUID | None:
+    async def peek(self, purpose: TokenPurpose, token: str) -> OneTimeTokenDTO | None:
+        self._record("peek")
+        if self.peek_failure is not None:
+            raise self.peek_failure
+        return self.live.get((purpose, token))
+
+    async def consume(self, purpose: TokenPurpose, token: str) -> OneTimeTokenDTO | None:
+        self._record("consume")
+        self.consumed.append((purpose, token))
+        if self.consume_failure is not None:
+            raise self.consume_failure
         return self.live.pop((purpose, token), None)
 
 

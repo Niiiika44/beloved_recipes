@@ -93,7 +93,7 @@ async def _all_keys_and_values(client: Redis) -> list[str]:
 
 
 async def test_create_returns_url_safe_token_of_43_chars(store: RedisSessionStore) -> None:
-    token = await store.create(uuid.uuid4())
+    token = await store.create(uuid.uuid4(), 0)
 
     assert isinstance(token, str)
     assert TOKEN_PATTERN.fullmatch(token)
@@ -102,7 +102,7 @@ async def test_create_returns_url_safe_token_of_43_chars(store: RedisSessionStor
 async def test_tokens_are_unique(store: RedisSessionStore) -> None:
     user_id = uuid.uuid4()
 
-    tokens = {await store.create(user_id) for _ in range(20)}
+    tokens = {await store.create(user_id, 0) for _ in range(20)}
 
     assert len(tokens) == 20
 
@@ -112,14 +112,14 @@ async def test_create_stores_exactly_one_key_named_by_token_hash(
 ) -> None:
     before = {key async for key in redis_client.scan_iter()}
 
-    token = await store.create(uuid.uuid4())
+    token = await store.create(uuid.uuid4(), 0)
 
     after = {key async for key in redis_client.scan_iter()}
     assert after - before == {_key(token)}
 
 
 async def test_raw_token_never_reaches_redis(store: RedisSessionStore, redis_client: Redis) -> None:
-    token = await store.create(uuid.uuid4())
+    token = await store.create(uuid.uuid4(), 0)
 
     stored = await _all_keys_and_values(redis_client)
 
@@ -127,9 +127,21 @@ async def test_raw_token_never_reaches_redis(store: RedisSessionStore, redis_cli
     assert all(token not in item for item in stored)
 
 
+@pytest.mark.parametrize("version", [0, 1, 42])
+async def test_session_remembers_the_credentials_version(
+    store: RedisSessionStore, version: int
+) -> None:
+    token = await store.create(uuid.uuid4(), version)
+
+    session = await store.resolve(token)
+
+    assert session is not None
+    assert session.credentials_version == version
+
+
 async def test_resolve_returns_session_of_created_user(store: RedisSessionStore) -> None:
     user_id = uuid.uuid4()
-    token = await store.create(user_id)
+    token = await store.create(user_id, 0)
 
     session = await store.resolve(token)
 
@@ -139,7 +151,7 @@ async def test_resolve_returns_session_of_created_user(store: RedisSessionStore)
 
 
 async def test_resolve_reports_creation_time_in_utc(store: RedisSessionStore) -> None:
-    token = await store.create(uuid.uuid4())
+    token = await store.create(uuid.uuid4(), 0)
 
     session = await store.resolve(token)
 
@@ -150,13 +162,13 @@ async def test_resolve_reports_creation_time_in_utc(store: RedisSessionStore) ->
 
 
 async def test_resolve_unknown_token_returns_none(store: RedisSessionStore) -> None:
-    await store.create(uuid.uuid4())
+    await store.create(uuid.uuid4(), 0)
 
     assert await store.resolve("A" * 43) is None
 
 
 async def test_token_hash_cannot_be_used_as_token(store: RedisSessionStore) -> None:
-    token = await store.create(uuid.uuid4())
+    token = await store.create(uuid.uuid4(), 0)
 
     assert await store.resolve(sha256(token.encode()).hexdigest()) is None
     assert await store.resolve(_key(token)) is None
@@ -181,7 +193,7 @@ async def test_revoke_ignores_malformed_token_without_calling_redis(
 
 
 async def test_revoke_deletes_session(store: RedisSessionStore, redis_client: Redis) -> None:
-    token = await store.create(uuid.uuid4())
+    token = await store.create(uuid.uuid4(), 0)
 
     await store.revoke(token)
 
@@ -190,7 +202,7 @@ async def test_revoke_deletes_session(store: RedisSessionStore, redis_client: Re
 
 
 async def test_revoke_is_idempotent(store: RedisSessionStore) -> None:
-    token = await store.create(uuid.uuid4())
+    token = await store.create(uuid.uuid4(), 0)
     await store.revoke(token)
 
     await store.revoke(token)
@@ -200,8 +212,8 @@ async def test_revoke_is_idempotent(store: RedisSessionStore) -> None:
 
 async def test_revoke_leaves_other_sessions_alone(store: RedisSessionStore) -> None:
     user_id = uuid.uuid4()
-    kept = await store.create(user_id)
-    dropped = await store.create(user_id)
+    kept = await store.create(user_id, 0)
+    dropped = await store.create(user_id, 0)
 
     await store.revoke(dropped)
 
@@ -213,7 +225,7 @@ async def test_revoke_leaves_other_sessions_alone(store: RedisSessionStore) -> N
 async def test_new_session_lives_for_idle_ttl(
     store: RedisSessionStore, redis_client: Redis
 ) -> None:
-    token = await store.create(uuid.uuid4())
+    token = await store.create(uuid.uuid4(), 0)
 
     ttl = await redis_client.ttl(_key(token))
 
@@ -223,7 +235,7 @@ async def test_new_session_lives_for_idle_ttl(
 async def test_resolve_extends_session_to_full_idle_ttl(
     store: RedisSessionStore, redis_client: Redis
 ) -> None:
-    token = await store.create(uuid.uuid4())
+    token = await store.create(uuid.uuid4(), 0)
     await redis_client.expire(_key(token), 100)
 
     await store.resolve(token)
@@ -235,7 +247,7 @@ async def test_resolve_extends_session_to_full_idle_ttl(
 async def test_session_past_absolute_lifetime_is_gone(
     store: RedisSessionStore, redis_client: Redis, clock: Clock
 ) -> None:
-    token = await store.create(uuid.uuid4())
+    token = await store.create(uuid.uuid4(), 0)
     clock.advance(timedelta(seconds=ABSOLUTE + 1))
 
     assert await store.resolve(token) is None
@@ -246,7 +258,7 @@ async def test_session_just_before_absolute_lifetime_is_alive(
     store: RedisSessionStore, clock: Clock
 ) -> None:
     user_id = uuid.uuid4()
-    token = await store.create(user_id)
+    token = await store.create(user_id, 0)
     clock.advance(timedelta(seconds=ABSOLUTE - 1))
 
     session = await store.resolve(token)
@@ -258,7 +270,7 @@ async def test_session_just_before_absolute_lifetime_is_alive(
 async def test_session_exactly_at_absolute_lifetime_is_alive(
     store: RedisSessionStore, clock: Clock
 ) -> None:
-    token = await store.create(uuid.uuid4())
+    token = await store.create(uuid.uuid4(), 0)
     clock.advance(timedelta(seconds=ABSOLUTE))
 
     assert await store.resolve(token) is not None
@@ -267,7 +279,7 @@ async def test_session_exactly_at_absolute_lifetime_is_alive(
 async def test_expired_session_stays_gone_when_clock_rolls_back(
     store: RedisSessionStore, clock: Clock
 ) -> None:
-    token = await store.create(uuid.uuid4())
+    token = await store.create(uuid.uuid4(), 0)
     clock.advance(timedelta(seconds=ABSOLUTE + 1))
     await store.resolve(token)
     clock.advance(timedelta(seconds=-(ABSOLUTE + 1)))
@@ -279,9 +291,9 @@ async def test_absolute_expiry_of_one_session_spares_newer_ones(
     store: RedisSessionStore, clock: Clock
 ) -> None:
     user_id = uuid.uuid4()
-    old = await store.create(user_id)
+    old = await store.create(user_id, 0)
     clock.advance(timedelta(seconds=ABSOLUTE - 10))
-    fresh = await store.create(user_id)
+    fresh = await store.create(user_id, 0)
     clock.advance(timedelta(seconds=20))
 
     assert await store.resolve(old) is None
@@ -294,7 +306,7 @@ WELL_FORMED = "A" * 43
 
 async def _call(store: RedisSessionStore, operation: str) -> None:
     if operation == "create":
-        await store.create(uuid.uuid4())
+        await store.create(uuid.uuid4(), 0)
     elif operation == "resolve":
         await store.resolve(WELL_FORMED)
     else:
@@ -449,7 +461,7 @@ async def test_unavailability_names_the_session_store(
 async def test_corrupted_entry_is_not_disguised_as_unavailability(
     store: RedisSessionStore, redis_client: Redis
 ) -> None:
-    token = await store.create(uuid.uuid4())
+    token = await store.create(uuid.uuid4(), 0)
     await redis_client.delete(_key(token))
     await redis_client.hset(_key(token), mapping={"user_id": "x"})
 

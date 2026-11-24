@@ -37,7 +37,7 @@ async def _user(email: str = "anna@example.org", verified: bool = False) -> uuid
 
 async def _token(user_id: uuid.UUID, purpose: TokenPurpose = TokenPurpose.EMAIL_CONFIRM) -> str:
     store = RedisOneTimeTokenStore(client=get_redis(), operation_timeout_seconds=1.0)
-    return await store.issue(purpose, user_id, timedelta(hours=24))
+    return await store.issue(purpose, user_id, 0, timedelta(hours=24))
 
 
 async def _verified(user_id: uuid.UUID) -> bool:

@@ -37,6 +37,7 @@ class User(IdMixin, TimestampMixin, Base):
     avatar_url: Mapped[str | None]
     telegram_chat_id: Mapped[int | None] = mapped_column(BigInteger, unique=True)
     email_verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    credentials_version: Mapped[int] = mapped_column(default=0, server_default=text("0"))
 
     __table_args__ = (
         Index("users_email_lower_idx", func.lower("email"), unique=True),

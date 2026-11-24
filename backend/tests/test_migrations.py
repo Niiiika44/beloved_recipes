@@ -36,6 +36,7 @@ REVISION_BEFORE_IDENTITIES = "0001"
 REVISION_BEFORE_NICKNAMES = "0002"
 REVISION_BEFORE_PASSWORDS = "0003"
 REVISION_BEFORE_EMAIL_JOBS = "0004"
+REVISION_BEFORE_CREDENTIALS_VERSION = "0005"
 PASSWORD_HASH = "$argon2id$v=19$m=65536,t=3,p=4$c2FsdHNhbHQ$aGFzaGhhc2hoYXNo"
 
 
@@ -937,3 +938,66 @@ async def test_new_revision_gets_next_number(tmp_path: Path, autogenerate: bool)
     expected = f"{int(head) + 1:04d}"
     assert (location / "versions" / f"{expected}_probe.py").is_file()
     assert ScriptDirectory.from_config(config).get_current_head() == expected
+
+
+async def _credentials_version_column(connection: AsyncConnection) -> tuple[str, str, str | None]:
+    row = await connection.execute(
+        text(
+            "SELECT data_type, is_nullable, column_default FROM information_schema.columns"
+            " WHERE table_name = 'users' AND column_name = 'credentials_version'"
+        )
+    )
+    data_type, nullable, default = row.one()
+    return str(data_type), str(nullable), default
+
+
+async def test_credentials_version_is_a_required_integer_starting_at_zero() -> None:
+    async with get_engine().connect() as connection:
+        column = await _credentials_version_column(connection)
+
+    assert column == ("integer", "NO", "0")
+
+
+async def test_new_user_starts_with_credentials_version_zero() -> None:
+    async with get_engine().begin() as connection:
+        user_id = await _new_user(connection, "fresh-version@example.com")
+        version = await connection.scalar(
+            text("SELECT credentials_version FROM users WHERE id = :id"), {"id": user_id}
+        )
+        await connection.execute(text("DELETE FROM users WHERE id = :id"), {"id": user_id})
+
+    assert version == 0
+
+
+@pytest.mark.usefixtures("_restores_head")
+async def test_upgrade_gives_existing_users_version_zero() -> None:
+    await _migrate(command.downgrade, REVISION_BEFORE_CREDENTIALS_VERSION)
+    async with get_engine().begin() as connection:
+        user_id = await _new_user(connection, "before-version@example.com")
+
+    await _migrate(command.upgrade, "head")
+
+    async with get_engine().connect() as connection:
+        version = await connection.scalar(
+            text("SELECT credentials_version FROM users WHERE id = :id"), {"id": user_id}
+        )
+    assert version == 0
+
+
+@pytest.mark.usefixtures("_restores_head")
+async def test_downgrade_drops_the_column_and_keeps_users() -> None:
+    async with get_engine().begin() as connection:
+        user_id = await _new_user(connection, "kept@example.com")
+        await connection.execute(
+            text("UPDATE users SET credentials_version = 7 WHERE id = :id"), {"id": user_id}
+        )
+
+    await _migrate(command.downgrade, REVISION_BEFORE_CREDENTIALS_VERSION)
+
+    async with get_engine().connect() as connection:
+        columns = await _users_columns(connection)
+        kept = await connection.scalar(
+            text("SELECT count(*) FROM users WHERE id = :id"), {"id": user_id}
+        )
+    assert "credentials_version" not in columns
+    assert kept == 1

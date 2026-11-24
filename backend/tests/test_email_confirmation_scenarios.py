@@ -35,7 +35,7 @@ def _anna(verified: bool = False) -> UserDTO:
 
 
 async def _issued(tokens: FakeTokens, user_id: uuid.UUID, purpose: TokenPurpose) -> str:
-    return await tokens.issue(purpose, user_id, DAY)
+    return await tokens.issue(purpose, user_id, 0, DAY)
 
 
 async def test_confirmation_marks_the_email_verified() -> None:

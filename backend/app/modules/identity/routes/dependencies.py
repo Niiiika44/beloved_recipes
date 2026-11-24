@@ -17,7 +17,9 @@ from app.modules.identity.infrastructure.uow import SqlAlchemyUnitOfWork
 from app.modules.identity.service.auth import authenticate
 from app.modules.identity.service.dto import UserDTO
 from app.modules.identity.service.nicknames import ensure_nickname
+from app.modules.identity.service.password_change import PasswordChangeService
 from app.modules.identity.service.password_login import PasswordLoginService
+from app.modules.identity.service.password_reset import PasswordResetService
 from app.modules.identity.service.ports import (
     BreachedPasswordChecker,
     OneTimeTokenStore,
@@ -138,4 +140,34 @@ def get_password_login_service(
         sessions=sessions,
         events=events,
         secret=secret,
+    )
+
+
+def get_password_reset_service(
+    uow: Annotated[UnitOfWork, Depends(get_uow)],
+    tokens: Annotated[OneTimeTokenStore, Depends(get_one_time_token_store)],
+    hasher: Annotated[PasswordHasher, Depends(get_password_hasher)],
+    breach_checker: Annotated[BreachedPasswordChecker, Depends(get_breach_checker)],
+    events: Annotated[SecurityEvents, Depends(get_security_events)],
+) -> PasswordResetService:
+    return PasswordResetService(
+        uow=uow, tokens=tokens, hasher=hasher, breach_checker=breach_checker, events=events
+    )
+
+
+def get_password_change_service(
+    uow: Annotated[UnitOfWork, Depends(get_uow)],
+    limiter: Annotated[RateLimiter, Depends(get_rate_limiter)],
+    breach_checker: Annotated[BreachedPasswordChecker, Depends(get_breach_checker)],
+    hasher: Annotated[PasswordHasher, Depends(get_password_hasher)],
+    sessions: Annotated[SessionStore, Depends(get_session_store)],
+    events: Annotated[SecurityEvents, Depends(get_security_events)],
+) -> PasswordChangeService:
+    return PasswordChangeService(
+        uow=uow,
+        limiter=limiter,
+        hasher=hasher,
+        breach_checker=breach_checker,
+        sessions=sessions,
+        events=events,
     )

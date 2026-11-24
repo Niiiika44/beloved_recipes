@@ -1,4 +1,5 @@
 import uuid
+from dataclasses import replace
 from datetime import UTC, datetime
 
 import pytest
@@ -30,7 +31,7 @@ class FakeStore:
         self.revoked: list[str] = []
         self.revoked_inside_uow: list[bool] = []
 
-    async def create(self, user_id: uuid.UUID) -> str:
+    async def create(self, user_id: uuid.UUID, credentials_version: int) -> str:
         raise AssertionError("scenarios under test must not create sessions")
 
     async def resolve(self, token: str) -> SessionDTO | None:
@@ -47,8 +48,10 @@ class FakeStore:
         self.sessions.pop(token, None)
 
 
-def _session_of(user_id: uuid.UUID) -> SessionDTO:
-    return SessionDTO(user_id=user_id, created_at=CREATED_AT)
+def _session_of(user_id: uuid.UUID, credentials_version: int = 0) -> SessionDTO:
+    return SessionDTO(
+        user_id=user_id, created_at=CREATED_AT, credentials_version=credentials_version
+    )
 
 
 def _world(
@@ -94,6 +97,30 @@ async def test_valid_session_yields_itsmake_user() -> None:
     found = await authenticate(TOKEN, store, uow)
 
     assert found == owner
+    assert store.revoked == []
+
+
+@pytest.mark.parametrize(("session_version", "user_version"), [(0, 1), (2, 3), (4, 3)])
+async def test_session_of_another_credentials_version_is_revoked_and_rejected(
+    session_version: int, user_version: int
+) -> None:
+    owner = replace(make_user("Owner"), credentials_version=user_version)
+    store, uow = _world(owner, sessions={TOKEN: _session_of(owner.id, session_version)})
+
+    with pytest.raises(NotAuthenticatedError) as caught:
+        await authenticate(TOKEN, store, uow)
+
+    assert store.revoked == [TOKEN]
+    assert TOKEN not in store.sessions
+    assert store.revoked_inside_uow == [False]
+    assert str(caught.value) == "Session is missing or invalid"
+
+
+async def test_session_of_the_current_credentials_version_passes() -> None:
+    owner = replace(make_user("Owner"), credentials_version=5)
+    store, uow = _world(owner, sessions={TOKEN: _session_of(owner.id, 5)})
+
+    assert await authenticate(TOKEN, store, uow) == owner
     assert store.revoked == []
 
 

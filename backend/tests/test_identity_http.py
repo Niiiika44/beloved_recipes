@@ -76,8 +76,8 @@ class CountingStore:
         self._inner = inner
         self.resolves = 0
 
-    async def create(self, user_id: uuid.UUID) -> str:
-        return await self._inner.create(user_id)
+    async def create(self, user_id: uuid.UUID, credentials_version: int) -> str:
+        return await self._inner.create(user_id, credentials_version)
 
     async def resolve(self, token: str) -> SessionDTO | None:
         self.resolves += 1
@@ -112,7 +112,7 @@ async def _join(user: User, role: WorkspaceRole, name: str = "Sunday dinners") -
 
 
 async def _signed_in(user: User) -> str:
-    return await _store(get_redis()).create(user.id)
+    return await _store(get_redis()).create(user.id, user.credentials_version)
 
 
 async def test_missing_cookie_is_401_problem(client: httpx.AsyncClient) -> None:
@@ -218,7 +218,7 @@ async def test_session_past_absolute_lifetime_is_401(client: httpx.AsyncClient) 
     user = await _user()
     absolute = get_settings().session.absolute_ttl_seconds
     long_ago = _now() - timedelta(seconds=absolute + 60)
-    token = await _store(get_redis(), now=lambda: long_ago).create(user.id)
+    token = await _store(get_redis(), now=lambda: long_ago).create(user.id, 0)
 
     response = await client.get(ME, headers=_cookie(token))
 
@@ -770,6 +770,7 @@ async def test_patch_by_user_deleted_after_authentication_is_401(
         display_name=user.display_name,
         avatar_url=None,
         email_verified_at=None,
+        credentials_version=0,
     )
     await _delete_user(user.id)
     app.dependency_overrides[get_current_user] = lambda: stale

@@ -549,7 +549,12 @@ async def test_login_and_logout_are_security_events(client: httpx.AsyncClient) -
             "log_level": "info",
         },
         {"event": "security.logout", "user_id": str(user_id), "log_level": "info"},
-        {"event": "security.login_failed", "reason": "bad_credentials", "log_level": "info"},
+        {
+            "event": "security.login_failed",
+            "user_id": str(user_id),
+            "reason": "bad_credentials",
+            "log_level": "info",
+        },
     ]
 
 

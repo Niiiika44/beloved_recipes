@@ -97,6 +97,14 @@ async def test_right_password_opens_a_new_session_for_the_user() -> None:
     assert world.events.recorded == [("login_succeeded", str(world.user.id), "password")]
 
 
+async def test_new_session_carries_the_current_credentials_version() -> None:
+    world = World(replace(_anna(), credentials_version=6))
+
+    token = await world.login()
+
+    assert world.sessions.versions[token] == 6
+
+
 async def test_successful_login_without_rehash_writes_nothing() -> None:
     world = World(_anna())
 
@@ -222,7 +230,7 @@ async def test_unknown_email_spends_a_dummy_check_and_is_refused() -> None:
     assert isinstance(refusal, InvalidCredentialsError)
     assert world.hasher.dummies == [PASSWORD]
     assert world.hasher.verified == []
-    assert world.events.recorded == [("login_failed", "bad_credentials")]
+    assert world.events.recorded == [("login_failed", "-", "bad_credentials")]
     assert world.sessions.created == []
 
 
@@ -231,10 +239,11 @@ async def test_account_without_password_spends_a_dummy_check_and_is_refused() ->
 
     refusal = await world.refused()
 
+    assert world.user is not None
     assert isinstance(refusal, InvalidCredentialsError)
     assert world.hasher.dummies == [PASSWORD]
     assert world.hasher.verified == []
-    assert world.events.recorded == [("login_failed", "bad_credentials")]
+    assert world.events.recorded == [("login_failed", str(world.user.id), "bad_credentials")]
     assert world.sessions.created == []
 
 
@@ -245,8 +254,9 @@ async def test_wrong_password_is_refused_without_a_dummy_check() -> None:
 
     assert isinstance(refusal, InvalidCredentialsError)
     assert world.hasher.verified == [(STORED_HASH, "wrong horse battery")]
+    assert world.user is not None
     assert world.hasher.dummies == []
-    assert world.events.recorded == [("login_failed", "bad_credentials")]
+    assert world.events.recorded == [("login_failed", str(world.user.id), "bad_credentials")]
     assert world.sessions.created == []
 
 
@@ -296,8 +306,9 @@ async def test_unverified_email_with_right_password_is_403() -> None:
 
     refusal = await world.refused()
 
+    assert world.user is not None
     assert isinstance(refusal, EmailNotVerifiedError)
-    assert world.events.recorded == [("login_failed", "email_not_verified")]
+    assert world.events.recorded == [("login_failed", str(world.user.id), "email_not_verified")]
     assert world.sessions.created == []
     assert world.uow.commits == 0
 
@@ -307,8 +318,9 @@ async def test_unverified_email_with_wrong_password_is_bad_credentials() -> None
 
     refusal = await world.refused(replace(LOGIN, password="wrong horse battery"))
 
+    assert world.user is not None
     assert isinstance(refusal, InvalidCredentialsError)
-    assert world.events.recorded == [("login_failed", "bad_credentials")]
+    assert world.events.recorded == [("login_failed", str(world.user.id), "bad_credentials")]
 
 
 async def test_password_is_checked_in_normalized_form() -> None:
