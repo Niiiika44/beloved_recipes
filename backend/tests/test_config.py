@@ -635,3 +635,30 @@ def test_redis_pool_timeout_is_read_from_env(monkeypatch: pytest.MonkeyPatch) ->
 def test_redis_pool_timeout_must_be_positive(monkeypatch: pytest.MonkeyPatch, value: str) -> None:
     with pytest.raises(ValidationError):
         _build(monkeypatch, REDIS__POOL_TIMEOUT_SECONDS=value)
+
+
+def test_login_state_section_is_optional_and_has_defaults(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = _build(monkeypatch)
+
+    assert settings.login_state.operation_timeout_seconds == 1.0
+
+
+def test_login_state_values_are_read_from_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    settings = _build(monkeypatch, LOGIN_STATE__OPERATION_TIMEOUT_SECONDS="0.25")
+
+    assert settings.login_state.operation_timeout_seconds == 0.25
+
+
+@pytest.mark.parametrize("value", ["0", "-0.5"])
+def test_non_positive_login_state_timeout_is_rejected(
+    monkeypatch: pytest.MonkeyPatch, value: str
+) -> None:
+    with pytest.raises(ValidationError):
+        _build(monkeypatch, LOGIN_STATE__OPERATION_TIMEOUT_SECONDS=value)
+
+
+def test_typo_inside_login_state_section_is_rejected(monkeypatch: pytest.MonkeyPatch) -> None:
+    with pytest.raises(ValidationError):
+        _build(monkeypatch, LOGIN_STATE__OPERATION_TIMEOUT="0.5")

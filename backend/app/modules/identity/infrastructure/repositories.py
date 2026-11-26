@@ -6,13 +6,14 @@ from sqlalchemy import delete, func, or_, select, text, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.modules.identity.domain.enums import EmailJobStatus, EmailPurpose
+from app.modules.identity.domain.enums import EmailJobStatus, EmailPurpose, IdentityProvider
 from app.modules.identity.infrastructure.models import (
     EmailJob,
     Membership,
     PasswordCredential,
     ReleasedNickname,
     User,
+    UserIdentity,
     Workspace,
 )
 from app.modules.identity.service.dto import (
@@ -72,10 +73,21 @@ class SqlUserRepository:
             role=membership.role,
         )
 
-    async def create(self, email: str, display_name: str) -> UUID | None:
+    async def create(
+        self,
+        email: str,
+        display_name: str,
+        avatar_url: str | None = None,
+        email_verified: bool = False,
+    ) -> UUID | None:
         query = (
             insert(User)
-            .values(email=email, display_name=display_name)
+            .values(
+                email=email,
+                display_name=display_name,
+                avatar_url=avatar_url,
+                email_verified_at=func.now() if email_verified else None,
+            )
             .on_conflict_do_nothing(index_elements=[func.lower(User.email)])
             .returning(User.id)
         )
@@ -87,6 +99,50 @@ class SqlUserRepository:
         result = await self._session.execute(query)
         user = result.scalar_one_or_none()
         return self._to_dto(user)
+
+    async def find_by_identity(self, provider: IdentityProvider, subject: str) -> UserDTO | None:
+        query = (
+            select(User)
+            .join(UserIdentity, onclause=User.id == UserIdentity.user_id)
+            .where(UserIdentity.provider == provider, UserIdentity.subject == subject)
+        )
+        result = await self._session.execute(query)
+        user = result.scalar_one_or_none()
+        return self._to_dto(user)
+
+    async def get_identity_subject(self, user_id: UUID, provider: IdentityProvider) -> str | None:
+        query = select(UserIdentity.subject).where(
+            UserIdentity.user_id == user_id, UserIdentity.provider == provider
+        )
+        result = await self._session.execute(query)
+        return result.scalar_one_or_none()
+
+    async def link_identity(self, user_id: UUID, provider: IdentityProvider, subject: str) -> None:
+        query = (
+            insert(UserIdentity)
+            .values(user_id=user_id, provider=provider, subject=subject, updated_at=func.now())
+            .on_conflict_do_update(
+                index_elements=["user_id", "provider"],
+                set_={"updated_at": func.now(), "subject": subject},
+            )
+        )
+        await self._session.execute(query)
+
+    async def unlink_identity(self, user_id: UUID, provider: IdentityProvider) -> None:
+        query = delete(UserIdentity).where(
+            UserIdentity.user_id == user_id, UserIdentity.provider == provider
+        )
+        await self._session.execute(query)
+
+    async def update_profile(
+        self, user_id: UUID, email: str, display_name: str, avatar_url: str | None
+    ) -> None:
+        query = (
+            update(User)
+            .where(User.id == user_id)
+            .values(email=email, display_name=display_name, avatar_url=avatar_url)
+        )
+        await self._session.execute(query)
 
     async def mark_email_verified(self, user_id: UUID) -> None:
         query = (
@@ -184,6 +240,10 @@ class SqlPasswordRepository:
         )
         result = await self._session.execute(query)
         return result.scalar_one_or_none()
+
+    async def delete(self, user_id: UUID) -> None:
+        query = delete(PasswordCredential).where(PasswordCredential.user_id == user_id)
+        await self._session.execute(query)
 
 
 class SqlEmailJobRepository:

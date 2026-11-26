@@ -37,6 +37,7 @@ REVISION_BEFORE_NICKNAMES = "0002"
 REVISION_BEFORE_PASSWORDS = "0003"
 REVISION_BEFORE_EMAIL_JOBS = "0004"
 REVISION_BEFORE_CREDENTIALS_VERSION = "0005"
+REVISION_BEFORE_GOOGLE_LINKED = "0006"
 PASSWORD_HASH = "$argon2id$v=19$m=65536,t=3,p=4$c2FsdHNhbHQ$aGFzaGhhc2hoYXNo"
 
 
@@ -749,7 +750,12 @@ async def test_email_enums_store_values_not_member_names() -> None:
         )
         status_values = [row[0] for row in statuses]
 
-    assert purpose_values == ["email_confirm", "password_reset", "already_registered"]
+    assert purpose_values == [
+        "email_confirm",
+        "password_reset",
+        "already_registered",
+        "google_linked",
+    ]
     assert status_values == ["pending", "failed"]
 
 
@@ -1001,3 +1007,76 @@ async def test_downgrade_drops_the_column_and_keeps_users() -> None:
         )
     assert "credentials_version" not in columns
     assert kept == 1
+
+
+async def _purposes(connection: AsyncConnection) -> list[str]:
+    rows = await connection.execute(text("SELECT unnest(enum_range(NULL::email_purpose))"))
+    return [row[0] for row in rows]
+
+
+async def _job_count(connection: AsyncConnection) -> int:
+    return int(await connection.scalar(text("SELECT count(*) FROM email_jobs")) or 0)
+
+
+async def test_google_linked_letter_can_be_queued() -> None:
+    async with get_engine().begin() as connection:
+        user_id = await _new_user(connection, "linked@example.com")
+        await _new_job(connection, user_id, "google_linked")
+        purpose = await connection.scalar(
+            text("SELECT purpose::text FROM email_jobs WHERE user_id = :id"), {"id": user_id}
+        )
+        await connection.execute(text("DELETE FROM users WHERE id = :id"), {"id": user_id})
+
+    assert purpose == "google_linked"
+
+
+@pytest.mark.usefixtures("_restores_head")
+async def test_downgrade_removes_the_value_and_keeps_other_letters() -> None:
+    async with get_engine().begin() as connection:
+        user_id = await _new_user(connection, "letters@example.com")
+        await _new_job(connection, user_id, "password_reset")
+        linked = await _new_job(connection, user_id, "google_linked")
+        await _fail_job(connection, linked)
+
+    await _migrate(command.downgrade, REVISION_BEFORE_GOOGLE_LINKED)
+
+    async with get_engine().connect() as connection:
+        purposes = await _purposes(connection)
+        left = await connection.execute(text("SELECT purpose::text FROM email_jobs"))
+        left_purposes = [row[0] for row in left]
+        old_type_left = await _type_exists(connection, "email_purpose_old")
+    assert purposes == ["email_confirm", "password_reset", "already_registered"]
+    assert left_purposes == ["password_reset"]
+    assert not old_type_left
+
+
+@pytest.mark.usefixtures("_restores_head")
+async def test_downgrade_keeps_one_pending_letter_per_purpose() -> None:
+    await _migrate(command.downgrade, REVISION_BEFORE_GOOGLE_LINKED)
+    async with get_engine().begin() as connection:
+        user_id = await _new_user(connection, "twice@example.com")
+        await _new_job(connection, user_id)
+
+    with pytest.raises(IntegrityError):
+        async with get_engine().begin() as connection:
+            await _new_job(connection, user_id)
+
+
+@pytest.mark.usefixtures("_restores_head")
+async def test_downgrade_refuses_while_google_linked_letters_are_pending() -> None:
+    async with get_engine().begin() as connection:
+        user_id = await _new_user(connection, "waiting-link@example.com")
+        await _new_job(connection, user_id, "google_linked")
+
+    with pytest.raises(RuntimeError, match="1 google_linked emails are still pending"):
+        await _migrate(command.downgrade, REVISION_BEFORE_GOOGLE_LINKED)
+
+    get_engine.cache_clear()
+    get_session_factory.cache_clear()
+    async with get_engine().connect() as connection:
+        version = await connection.scalar(text("SELECT version_num FROM alembic_version"))
+        purposes = await _purposes(connection)
+        jobs = await _job_count(connection)
+    assert version == ScriptDirectory.from_config(_config()).get_current_head()
+    assert "google_linked" in purposes
+    assert jobs == 1

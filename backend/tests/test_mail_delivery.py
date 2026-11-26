@@ -295,3 +295,25 @@ async def test_logs_name_the_job_but_never_the_address() -> None:
     assert all({"job_id", "user_id", "purpose", "attempts"} <= set(record) for record in records)
     assert "anna@example.org" not in repr(records)
     assert "token-" not in repr(records)
+
+
+async def test_google_linked_letter_carries_a_week_long_not_me_link() -> None:
+    anna = replace(_anna(verified=True), credentials_version=3)
+    world = World(anna)
+    job = world.queue(anna, EmailPurpose.GOOGLE_LINKED)
+
+    await world.service.deliver_batch()
+
+    assert world.tokens.issued == [
+        (TokenPurpose.GOOGLE_NOT_ME, anna.id, timedelta(days=7), "token-1")
+    ]
+    assert world.tokens.versions == [3]
+    assert world.mailer.sent == [
+        (
+            "anna@example.org",
+            anna.display_name,
+            EmailPurpose.GOOGLE_LINKED,
+            f"{BASE_URL}/auth/google/not-me#token=token-1",
+        )
+    ]
+    assert world.uow.outcomes == [("complete", job.id, None, None)]

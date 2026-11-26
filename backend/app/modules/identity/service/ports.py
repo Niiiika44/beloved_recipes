@@ -4,13 +4,21 @@ from types import TracebackType
 from typing import Protocol, Self
 from uuid import UUID
 
-from app.modules.identity.domain.enums import EmailPurpose, LoginMethod, TokenPurpose
+from app.modules.identity.domain.enums import (
+    EmailPurpose,
+    IdentityProvider,
+    LoginMethod,
+    TokenPurpose,
+)
 from app.modules.identity.domain.limits import RateLimit
 from app.modules.identity.service.dto import (
     EmailJobDTO,
     MembershipDTO,
+    OidcIdentityDTO,
     OneTimeTokenDTO,
     PasswordCheckDTO,
+    PendingLoginDTO,
+    ProviderRejectionDTO,
     ReleasedNicknameDTO,
     SessionDTO,
     UserDTO,
@@ -32,9 +40,33 @@ class UserRepository(Protocol):
 
     async def get_membership(self, user_id: UUID) -> MembershipDTO | None: ...
 
-    async def create(self, email: str, display_name: str) -> UUID | None: ...
+    async def create(
+        self,
+        email: str,
+        display_name: str,
+        avatar_url: str | None = None,
+        email_verified: bool = False,
+    ) -> UUID | None: ...
 
     async def find_by_email(self, email: str) -> UserDTO | None: ...
+
+    async def find_by_identity(
+        self, provider: IdentityProvider, subject: str
+    ) -> UserDTO | None: ...
+
+    async def get_identity_subject(
+        self, user_id: UUID, provider: IdentityProvider
+    ) -> str | None: ...
+
+    async def link_identity(
+        self, user_id: UUID, provider: IdentityProvider, subject: str
+    ) -> None: ...
+
+    async def unlink_identity(self, user_id: UUID, provider: IdentityProvider) -> None: ...
+
+    async def update_profile(
+        self, user_id: UUID, email: str, display_name: str, avatar_url: str | None
+    ) -> None: ...
 
     async def mark_email_verified(self, user_id: UUID) -> None: ...
 
@@ -57,6 +89,8 @@ class PasswordRepository(Protocol):
     async def set_hash(self, user_id: UUID, password_hash: str) -> None: ...
 
     async def get_hash(self, user_id: UUID) -> str | None: ...
+
+    async def delete(self, user_id: UUID) -> None: ...
 
 
 class EmailJobRepository(Protocol):
@@ -128,6 +162,16 @@ class SecurityEvents(Protocol):
 
     def reset_token_cleanup_failed(self) -> None: ...
 
+    def google_linked(self, user_id: UUID, subject: str) -> None: ...
+
+    def account_relinked(self, user_id: UUID, old_subject: str, new_subject: str) -> None: ...
+
+    def unverified_account_claimed(self, user_id: UUID) -> None: ...
+
+    def google_login_rejected(self, user_id: UUID | None, reason: str) -> None: ...
+
+    def google_disowned(self, user_id: UUID) -> None: ...
+
 
 class OneTimeTokenStore(Protocol):
     async def issue(
@@ -143,3 +187,17 @@ class Mailer(Protocol):
     async def send(
         self, recipient: str, recipient_name: str, purpose: EmailPurpose, link: str | None
     ) -> None: ...
+
+
+class OidcProvider(Protocol):
+    def authorization_url(self, state: str, nonce: str, code_challenge: str) -> str: ...
+
+    async def exchange_code(
+        self, code: str, code_verifier: str
+    ) -> OidcIdentityDTO | ProviderRejectionDTO: ...
+
+
+class LoginStateStore(Protocol):
+    async def save(self, state: str, pending: PendingLoginDTO, ttl: timedelta) -> None: ...
+
+    async def pop(self, state: str) -> PendingLoginDTO | None: ...

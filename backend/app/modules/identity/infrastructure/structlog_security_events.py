@@ -42,3 +42,28 @@ class StructlogSecurityEvents:
 
     def reset_token_cleanup_failed(self) -> None:
         self._logger.warning("security.reset_token_cleanup_failed")
+
+    def google_linked(self, user_id: UUID, subject: str) -> None:
+        self._logger.info("security.google_linked", user_id=str(user_id), subject=subject)
+
+    def account_relinked(self, user_id: UUID, old_subject: str, new_subject: str) -> None:
+        self._logger.info(
+            "security.account_relinked",
+            user_id=str(user_id),
+            old_subject=old_subject,
+            new_subject=new_subject,
+        )
+
+    def unverified_account_claimed(self, user_id: UUID) -> None:
+        self._logger.info("security.unverified_account_claimed", user_id=str(user_id))
+
+    def google_login_rejected(self, user_id: UUID | None, reason: str) -> None:
+        log = self._logger.warning if reason.startswith("provider:") else self._logger.info
+        log(
+            "security.google_login_rejected",
+            user_id=str(user_id) if user_id else None,
+            reason=reason,
+        )
+
+    def google_disowned(self, user_id: UUID) -> None:
+        self._logger.info("security.google_disowned", user_id=str(user_id))

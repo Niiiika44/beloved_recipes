@@ -17,7 +17,7 @@ class WorkspaceRole(StrEnum):
 
 
 class IdentityProvider(StrEnum):
-    """Methods of identity verification"""
+    """External providers that vouch for a user's identity"""
 
     GOOGLE = "google"
 
@@ -28,6 +28,7 @@ class EmailPurpose(StrEnum):
     EMAIL_CONFIRM = "email_confirm"
     PASSWORD_RESET = "password_reset"  # noqa: S105
     ALREADY_REGISTERED = "already_registered"
+    GOOGLE_LINKED = "google_linked"
 
 
 class EmailJobStatus(StrEnum):
@@ -42,6 +43,7 @@ class TokenPurpose(StrEnum):
 
     EMAIL_CONFIRM = "email_confirm"
     PASSWORD_RESET = "password_reset"  # noqa: S105
+    GOOGLE_NOT_ME = "google_not_me"
 
 
 class LoginMethod(StrEnum):

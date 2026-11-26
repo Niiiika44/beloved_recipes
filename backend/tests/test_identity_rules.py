@@ -472,7 +472,11 @@ def test_field_error_is_invalid_input() -> None:
 
 
 def test_token_purposes() -> None:
-    assert [purpose.value for purpose in TokenPurpose] == ["email_confirm", "password_reset"]
+    assert [purpose.value for purpose in TokenPurpose] == [
+        "email_confirm",
+        "password_reset",
+        "google_not_me",
+    ]
 
 
 def test_login_methods() -> None:

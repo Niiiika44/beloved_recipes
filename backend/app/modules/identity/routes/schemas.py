@@ -77,3 +77,9 @@ class PasswordChangeRequest(BaseModel):
 
     current_password: str = Field(..., description="User's current password")
     new_password: str = Field(..., description="New password to log in with")
+
+
+class GoogleNotMeRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    token: str = Field(..., description="Token from the Google-linked email")

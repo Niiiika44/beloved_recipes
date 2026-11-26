@@ -85,6 +85,10 @@ class TokenSection(_Section):
     operation_timeout_seconds: float = Field(1.0, gt=0)
 
 
+class LoginStateSection(_Section):
+    operation_timeout_seconds: float = Field(1.0, gt=0)
+
+
 class GoogleSection(_Section):
     client_id: str
     client_secret: SecretStr
@@ -178,6 +182,7 @@ class Settings(BaseSettings):
     db: DatabaseSection
     session: SessionSection = Field(default_factory=SessionSection)
     rate_limit: RateLimitSection = Field(default_factory=RateLimitSection)
+    login_state: LoginStateSection = Field(default_factory=LoginStateSection)
     token: TokenSection = Field(default_factory=TokenSection)
     redis: RedisSection
     security: SecuritySection

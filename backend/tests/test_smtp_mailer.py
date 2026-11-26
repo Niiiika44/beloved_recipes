@@ -88,7 +88,20 @@ async def test_already_registered_letter_has_its_own_text() -> None:
     assert CONFIRM_LINK in message.get_content()
 
 
-@pytest.mark.parametrize("purpose", [EmailPurpose.EMAIL_CONFIRM, EmailPurpose.ALREADY_REGISTERED])
+async def test_google_linked_letter_explains_the_not_me_link() -> None:
+    stub = StubSmtp()
+
+    await _send_through(stub, purpose=EmailPurpose.GOOGLE_LINKED)
+
+    [message] = stub.messages
+    assert message["Subject"] == "Вход через Google в «Beloved Recipes»"
+    body = message.get_content()
+    assert "Здравствуйте, Анна Иванова!" in body
+    assert CONFIRM_LINK in body
+    assert "7 дней" in body
+
+
+@pytest.mark.parametrize("purpose", list(EmailPurpose))
 def test_every_template_has_subject_and_placeholders(purpose: EmailPurpose) -> None:
     template = Path(__file__).resolve().parents[1] / (
         f"app/modules/identity/infrastructure/mail_templates/{purpose.value}.txt"

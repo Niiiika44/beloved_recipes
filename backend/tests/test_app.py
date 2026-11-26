@@ -1,6 +1,8 @@
 import logging
 import socket
 from collections.abc import Iterator
+from typing import Any, ClassVar
+from urllib.parse import parse_qs, urlsplit
 
 import httpx
 import pytest
@@ -12,7 +14,8 @@ from app.core.db import get_engine, get_session_factory
 from app.core.redis import get_redis
 from app.main import create_app, lifespan
 from app.modules.identity.infrastructure.argon2_password_hasher import Argon2PasswordHasher
-from app.modules.identity.routes.dependencies import get_password_hasher
+from app.modules.identity.infrastructure.google_oidc_provider import GoogleOidcProvider
+from app.modules.identity.routes.dependencies import get_oidc_provider, get_password_hasher
 
 PROD_SECRET = "p" * 40
 
@@ -204,3 +207,76 @@ async def test_each_application_gets_its_own_hasher() -> None:
 
     async with lifespan(first), lifespan(second):
         assert first.state.password_hasher is not second.state.password_hasher
+
+
+class RecordingHttp(httpx.AsyncClient):
+    created: ClassVar[list[RecordingHttp]] = []
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        RecordingHttp.created.append(self)
+
+
+@pytest.fixture
+def recorded_http(monkeypatch: pytest.MonkeyPatch) -> list[RecordingHttp]:
+    RecordingHttp.created = []
+    monkeypatch.setattr("app.main.httpx.AsyncClient", RecordingHttp)
+    return RecordingHttp.created
+
+
+@pytest.mark.usefixtures("quiet_logging")
+async def test_lifespan_builds_the_google_provider_from_settings(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("APP__PUBLIC_BASE_URL", "https://recipes.example")
+    monkeypatch.setenv("GOOGLE__CLIENT_ID", "lifespan-client.apps.googleusercontent.com")
+    get_settings.cache_clear()
+    app = create_app()
+
+    async with lifespan(app):
+        provider = app.state.oidc_provider
+
+        assert isinstance(provider, GoogleOidcProvider)
+        assert await get_oidc_provider(_request_to(app)) is provider
+        query = parse_qs(urlsplit(provider.authorization_url("s", "n", "c")).query)
+        assert query["client_id"] == ["lifespan-client.apps.googleusercontent.com"]
+        assert query["redirect_uri"] == ["https://recipes.example/api/v1/auth/google/callback"]
+
+
+@pytest.mark.usefixtures("quiet_logging")
+async def test_lifespan_shares_one_google_client_and_closes_it(
+    recorded_http: list[RecordingHttp],
+) -> None:
+    async with lifespan(create_app()):
+        [google_http] = recorded_http
+        assert not google_http.is_closed
+        assert google_http.timeout == httpx.Timeout(5.0)
+
+    assert google_http.is_closed
+
+
+@pytest.mark.usefixtures("quiet_logging")
+async def test_each_application_gets_its_own_google_provider() -> None:
+    first, second = create_app(), create_app()
+
+    async with lifespan(first), lifespan(second):
+        assert first.state.oidc_provider is not second.state.oidc_provider
+
+
+@pytest.mark.usefixtures("quiet_logging")
+async def test_google_client_close_failure_is_logged_and_not_raised(
+    monkeypatch: pytest.MonkeyPatch, recorded_http: list[RecordingHttp]
+) -> None:
+    async def failing_close() -> None:
+        raise RuntimeError("socket is gone")
+
+    with structlog.testing.capture_logs() as records:
+        async with lifespan(create_app()):
+            monkeypatch.setattr(recorded_http[0], "aclose", failing_close)
+            get_engine()
+            get_redis()
+
+    assert get_engine.cache_info().currsize == 0
+    assert get_redis.cache_info().currsize == 0
+    assert [record["event"] for record in records] == ["app.google_http_close_unavailable"]
+    assert records[0]["error"] == "socket is gone"

@@ -5,13 +5,21 @@ from datetime import UTC, datetime, timedelta
 from types import TracebackType
 from typing import Self
 
-from app.modules.identity.domain.enums import EmailPurpose, LoginMethod, TokenPurpose
+from app.modules.identity.domain.enums import (
+    EmailPurpose,
+    IdentityProvider,
+    LoginMethod,
+    TokenPurpose,
+)
 from app.modules.identity.domain.limits import RateLimit
 from app.modules.identity.service.dto import (
     EmailJobDTO,
     MembershipDTO,
+    OidcIdentityDTO,
     OneTimeTokenDTO,
     PasswordCheckDTO,
+    PendingLoginDTO,
+    ProviderRejectionDTO,
     ReleasedNicknameDTO,
     SessionDTO,
     UserDTO,
@@ -22,6 +30,8 @@ from app.modules.identity.service.ports import (
     PasswordRepository,
     UserRepository,
 )
+
+VERIFIED_AT = datetime(2026, 11, 20, 12, 0, tzinfo=UTC)
 
 
 def make_user(name: str = "Cook", nickname: str | None = None) -> UserDTO:
@@ -52,7 +62,13 @@ class FakeUsers:
         self._uow.record("get_membership")
         return self._uow.memberships.get(user_id)
 
-    async def create(self, email: str, display_name: str) -> uuid.UUID | None:
+    async def create(
+        self,
+        email: str,
+        display_name: str,
+        avatar_url: str | None = None,
+        email_verified: bool = False,
+    ) -> uuid.UUID | None:
         self._uow.record("create")
         if self._uow.find_email(email) is not None:
             return None
@@ -61,8 +77,8 @@ class FakeUsers:
             nickname=None,
             email=email,
             display_name=display_name,
-            avatar_url=None,
-            email_verified_at=None,
+            avatar_url=avatar_url,
+            email_verified_at=VERIFIED_AT if email_verified else None,
             credentials_version=0,
         )
         self._uow.stored[user.id] = user
@@ -76,6 +92,44 @@ class FakeUsers:
     async def mark_email_verified(self, user_id: uuid.UUID) -> None:
         self._uow.record("mark_email_verified")
         self._uow.verified.append(user_id)
+        user = self._uow.stored.get(user_id)
+        if user is not None and user.email_verified_at is None:
+            self._uow.stored[user_id] = replace(user, email_verified_at=VERIFIED_AT)
+
+    async def find_by_identity(self, provider: IdentityProvider, subject: str) -> UserDTO | None:
+        self._uow.record("find_by_identity")
+        for (user_id, linked_provider), linked_subject in self._uow.identities.items():
+            if linked_provider == provider and linked_subject == subject:
+                return self._uow.stored.get(user_id)
+        return None
+
+    async def get_identity_subject(
+        self, user_id: uuid.UUID, provider: IdentityProvider
+    ) -> str | None:
+        self._uow.record("get_identity_subject")
+        return self._uow.identities.get((user_id, provider))
+
+    async def link_identity(
+        self, user_id: uuid.UUID, provider: IdentityProvider, subject: str
+    ) -> None:
+        self._uow.record("link_identity")
+        for (owner, linked_provider), linked_subject in self._uow.identities.items():
+            if linked_provider == provider and linked_subject == subject and owner != user_id:
+                raise AssertionError("unique (provider, subject) violated")
+        self._uow.identities[(user_id, provider)] = subject
+
+    async def unlink_identity(self, user_id: uuid.UUID, provider: IdentityProvider) -> None:
+        self._uow.record("unlink_identity")
+        self._uow.identities.pop((user_id, provider), None)
+
+    async def update_profile(
+        self, user_id: uuid.UUID, email: str, display_name: str, avatar_url: str | None
+    ) -> None:
+        self._uow.record("update_profile")
+        user = self._uow.stored[user_id]
+        self._uow.stored[user_id] = replace(
+            user, email=email, display_name=display_name, avatar_url=avatar_url
+        )
 
     async def bump_credentials_version(self, user_id: uuid.UUID) -> int:
         self._uow.record("bump_credentials_version")
@@ -122,6 +176,10 @@ class FakePasswords:
     async def get_hash(self, user_id: uuid.UUID) -> str | None:
         self._uow.record("get_hash")
         return self._uow.password_hashes.get(user_id)
+
+    async def delete(self, user_id: uuid.UUID) -> None:
+        self._uow.record("delete_password")
+        self._uow.password_hashes.pop(user_id, None)
 
 
 class FakeEmailJobs:
@@ -180,6 +238,7 @@ class FakeUnitOfWork:
         self.password_hashes: dict[uuid.UUID, str] = {}
         self.jobs: list[tuple[EmailPurpose, uuid.UUID]] = []
         self.verified: list[uuid.UUID] = []
+        self.identities: dict[tuple[uuid.UUID, IdentityProvider], str] = {}
         self.purged: list[tuple[str, timedelta]] = []
         self.queued: list[EmailJobDTO] = []
         self.claims: list[tuple[int, timedelta]] = []
@@ -324,6 +383,21 @@ class FakeEvents:
     def reset_token_cleanup_failed(self) -> None:
         self.recorded.append(("reset_token_cleanup_failed",))
 
+    def google_linked(self, user_id: uuid.UUID, subject: str) -> None:
+        self.recorded.append(("google_linked", str(user_id), subject))
+
+    def account_relinked(self, user_id: uuid.UUID, old_subject: str, new_subject: str) -> None:
+        self.recorded.append(("account_relinked", str(user_id), old_subject, new_subject))
+
+    def unverified_account_claimed(self, user_id: uuid.UUID) -> None:
+        self.recorded.append(("unverified_account_claimed", str(user_id)))
+
+    def google_login_rejected(self, user_id: uuid.UUID | None, reason: str) -> None:
+        self.recorded.append(("google_login_rejected", str(user_id) if user_id else "-", reason))
+
+    def google_disowned(self, user_id: uuid.UUID) -> None:
+        self.recorded.append(("google_disowned", str(user_id)))
+
 
 class FakeSessions:
     def __init__(
@@ -444,3 +518,54 @@ class FakeMailer:
         if self.failures:
             raise self.failures.pop(0)
         self.sent.append((recipient, recipient_name, purpose, link))
+
+
+class FakeOidcProvider:
+    def __init__(
+        self,
+        answer: OidcIdentityDTO | ProviderRejectionDTO | None = None,
+        failure: Exception | None = None,
+        uow: FakeUnitOfWork | None = None,
+    ) -> None:
+        self.answer = answer
+        self.failure = failure
+        self.uow = uow
+        self.authorized: list[tuple[str, str, str]] = []
+        self.exchanged: list[tuple[str, str]] = []
+        self.exchanged_inside_uow: list[bool] = []
+
+    def authorization_url(self, state: str, nonce: str, code_challenge: str) -> str:
+        self.authorized.append((state, nonce, code_challenge))
+        return f"https://accounts.example/auth?state={state}"
+
+    async def exchange_code(
+        self, code: str, code_verifier: str
+    ) -> OidcIdentityDTO | ProviderRejectionDTO:
+        self.exchanged.append((code, code_verifier))
+        if self.uow is not None:
+            self.uow.calls.append("exchange_code")
+            self.exchanged_inside_uow.append(self.uow.active)
+        if self.failure is not None:
+            raise self.failure
+        assert self.answer is not None
+        return self.answer
+
+
+class FakeLoginStates:
+    def __init__(self, failure: Exception | None = None) -> None:
+        self.failure = failure
+        self.saved: dict[str, PendingLoginDTO] = {}
+        self.ttls: list[timedelta] = []
+        self.popped: list[str] = []
+
+    async def save(self, state: str, pending: PendingLoginDTO, ttl: timedelta) -> None:
+        if self.failure is not None:
+            raise self.failure
+        self.saved[state] = pending
+        self.ttls.append(ttl)
+
+    async def pop(self, state: str) -> PendingLoginDTO | None:
+        self.popped.append(state)
+        if self.failure is not None:
+            raise self.failure
+        return self.saved.pop(state, None)

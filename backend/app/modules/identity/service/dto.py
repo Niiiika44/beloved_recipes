@@ -3,6 +3,7 @@ from datetime import datetime
 from uuid import UUID
 
 from app.modules.identity.domain.enums import EmailPurpose, WorkspaceRole
+from app.modules.identity.domain.oidc import ProviderRejectionReason
 
 
 @dataclass(frozen=True, slots=True)
@@ -112,3 +113,47 @@ class PasswordResetDTO:
 class PasswordChangeDTO:
     current: str = field(repr=False)
     new: str = field(repr=False)
+
+
+@dataclass(frozen=True, slots=True)
+class OidcIdentityDTO:
+    subject: str
+    email: str
+    email_verified: bool
+    name: str
+    picture: str | None
+    nonce: str
+
+
+@dataclass(frozen=True, slots=True)
+class ProviderRejectionDTO:
+    reason: ProviderRejectionReason
+
+
+@dataclass(frozen=True, slots=True)
+class PendingLoginDTO:
+    code_verifier: str = field(repr=False)
+    nonce: str
+    next: str
+    browser_binding_hash: str
+
+
+@dataclass(frozen=True, slots=True)
+class GoogleLoginStartDTO:
+    authorization_url: str
+    browser_binding: str = field(repr=False)
+
+
+@dataclass(frozen=True, slots=True)
+class GoogleCallbackDTO:
+    code: str = field(repr=False)
+    state: str
+    browser_binding: str | None = field(repr=False)
+    current_token: str | None = field(repr=False)
+    client_ip: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class GoogleLoginResultDTO:
+    token: str = field(repr=False)
+    next: str

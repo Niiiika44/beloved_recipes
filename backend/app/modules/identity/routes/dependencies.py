@@ -9,6 +9,7 @@ from app.core.config import Settings, get_settings
 from app.core.db import get_session_factory
 from app.core.redis import get_redis
 from app.modules.identity.infrastructure.pwned_passwords_checker import PwnedPasswordsChecker
+from app.modules.identity.infrastructure.redis_login_state_store import RedisLoginStateStore
 from app.modules.identity.infrastructure.redis_one_time_token_store import RedisOneTimeTokenStore
 from app.modules.identity.infrastructure.redis_rate_limiter import RedisRateLimiter
 from app.modules.identity.infrastructure.redis_session_store import RedisSessionStore
@@ -16,12 +17,15 @@ from app.modules.identity.infrastructure.structlog_security_events import Struct
 from app.modules.identity.infrastructure.uow import SqlAlchemyUnitOfWork
 from app.modules.identity.service.auth import authenticate
 from app.modules.identity.service.dto import UserDTO
+from app.modules.identity.service.google_login import GoogleLoginService
 from app.modules.identity.service.nicknames import ensure_nickname
 from app.modules.identity.service.password_change import PasswordChangeService
 from app.modules.identity.service.password_login import PasswordLoginService
 from app.modules.identity.service.password_reset import PasswordResetService
 from app.modules.identity.service.ports import (
     BreachedPasswordChecker,
+    LoginStateStore,
+    OidcProvider,
     OneTimeTokenStore,
     PasswordHasher,
     RateLimiter,
@@ -93,6 +97,11 @@ async def require_nickname(
 async def get_password_hasher(request: Request) -> PasswordHasher:
     hasher: PasswordHasher = request.app.state.password_hasher
     return hasher
+
+
+async def get_oidc_provider(request: Request) -> OidcProvider:
+    provider: OidcProvider = request.app.state.oidc_provider
+    return provider
 
 
 def get_breach_checker() -> BreachedPasswordChecker:
@@ -170,4 +179,31 @@ def get_password_change_service(
         breach_checker=breach_checker,
         sessions=sessions,
         events=events,
+    )
+
+
+def get_login_state_store(
+    client: Annotated[Redis, Depends(get_redis)],
+    settings: Annotated[Settings, Depends(get_settings)],
+) -> LoginStateStore:
+    return RedisLoginStateStore(
+        client=client, operation_timeout_seconds=settings.login_state.operation_timeout_seconds
+    )
+
+
+def get_google_login_service(
+    uow: Annotated[UnitOfWork, Depends(get_uow)],
+    provider: Annotated[OidcProvider, Depends(get_oidc_provider)],
+    states: Annotated[LoginStateStore, Depends(get_login_state_store)],
+    sessions: Annotated[SessionStore, Depends(get_session_store)],
+    events: Annotated[SecurityEvents, Depends(get_security_events)],
+    limiter: Annotated[RateLimiter, Depends(get_rate_limiter)],
+) -> GoogleLoginService:
+    return GoogleLoginService(
+        uow=uow,
+        provider=provider,
+        states=states,
+        sessions=sessions,
+        events=events,
+        limiter=limiter,
     )

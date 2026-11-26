@@ -11,3 +11,11 @@ class RateLimiterUnavailableError(DependencyUnavailableError):
 
 class OneTimeTokenStoreUnavailableError(DependencyUnavailableError):
     pass
+
+
+class IdentityProviderUnavailableError(DependencyUnavailableError):
+    pass
+
+
+class LoginStateStoreUnavailableError(DependencyUnavailableError):
+    pass

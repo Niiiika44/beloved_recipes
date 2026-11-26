@@ -6,6 +6,7 @@ MAIL_MAX_ATTEMPTS = 8
 MAIL_RETRY_BASE = timedelta(seconds=30)
 MAIL_RETRY_MAX = timedelta(hours=1)
 FAILED_MAIL_RETENTION = timedelta(days=30)
+GOOGLE_NOT_ME_TOKEN_TTL = timedelta(days=7)
 
 
 def retry_delay(attempts: int) -> timedelta:

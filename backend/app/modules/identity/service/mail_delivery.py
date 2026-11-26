@@ -7,6 +7,7 @@ from app.core.exceptions import DependencyUnavailableError
 from app.modules.identity.domain.enums import EmailPurpose, TokenPurpose
 from app.modules.identity.domain.mail import (
     EMAIL_CONFIRM_TOKEN_TTL,
+    GOOGLE_NOT_ME_TOKEN_TTL,
     MAIL_MAX_ATTEMPTS,
     PASSWORD_RESET_TOKEN_TTL,
     retry_delay,
@@ -23,6 +24,7 @@ logger = structlog.get_logger(__name__)
 CONFIRM_PATH = "/auth/confirm"
 FORGOT_PATH = "/auth/forgot"
 RESET_PATH = "/auth/reset"
+NOT_ME_PATH = "/auth/google/not-me"
 
 
 @dataclass(frozen=True, slots=True)
@@ -39,6 +41,9 @@ LETTERS: dict[EmailPurpose, _Letter] = {
     EmailPurpose.ALREADY_REGISTERED: _Letter(FORGOT_PATH),
     EmailPurpose.PASSWORD_RESET: _Letter(
         RESET_PATH, TokenPurpose.PASSWORD_RESET, PASSWORD_RESET_TOKEN_TTL
+    ),
+    EmailPurpose.GOOGLE_LINKED: _Letter(
+        NOT_ME_PATH, TokenPurpose.GOOGLE_NOT_ME, GOOGLE_NOT_ME_TOKEN_TTL
     ),
 }
 
