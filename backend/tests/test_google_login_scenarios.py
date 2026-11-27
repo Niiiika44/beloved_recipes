@@ -396,10 +396,41 @@ async def test_parallel_first_login_that_created_the_user_first_is_reused() -> N
     assert world.uow.identities == {(earlier.id, GOOGLE): "sub-anna"}
 
 
+class LateLinkedUsers(LateUsers):
+    async def find_by_email(self, email: str) -> UserDTO | None:
+        found = await super().find_by_email(email)
+        if self.lookups == 1:
+            self._uow.identities[(self.late.id, GOOGLE)] = "sub-anna"
+        return found
+
+
+async def test_parallel_first_login_of_the_same_google_account_is_a_plain_login() -> None:
+    earlier = _user(email_verified_at=VERIFIED_AT, display_name="Anna Google", avatar_url=None)
+    world = World()
+    world.uow.users = LateLinkedUsers(world.uow, earlier)
+
+    token = await world.complete()
+
+    assert world.uow.created == []
+    assert world.sessions.created == [(earlier.id, token)]
+    assert world.sessions.versions[token] == 0
+    assert "bump_credentials_version" not in world.uow.calls
+    assert world.uow.jobs == []
+    assert world.uow.identities == {(earlier.id, GOOGLE): "sub-anna"}
+    assert world.uow.stored[earlier.id].avatar_url == "https://google/anna.png"
+    assert [event[0] for event in world.events.recorded] == ["login_succeeded"]
+
+
 @pytest.mark.parametrize(
     ("name", "expected"),
-    [("   ", "anna"), ("x" * 101, "anna"), ("Anna\x00Google", "anna"), (" Anna ", "Anna")],
-    ids=["blank", "too_long", "control_character", "padded"],
+    [
+        ("", "anna"),
+        ("   ", "anna"),
+        ("x" * 101, "anna"),
+        ("Anna\x00Google", "anna"),
+        (" Anna ", "Anna"),
+    ],
+    ids=["missing", "blank", "too_long", "control_character", "padded"],
 )
 async def test_unusable_google_name_falls_back_to_the_email(name: str, expected: str) -> None:
     world = World(answer=_identity(name=name))

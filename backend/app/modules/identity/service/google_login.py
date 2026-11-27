@@ -209,6 +209,8 @@ class GoogleLoginService:
 
     async def _link_verified(self, user: UserDTO, identity: OidcIdentityDTO) -> _SignedIn:
         previous = await self._uow.users.get_identity_subject(user.id, IdentityProvider.GOOGLE)
+        if previous == identity.subject:
+            return await self._refresh_profile(user, identity)
         await self._uow.users.link_identity(user.id, IdentityProvider.GOOGLE, identity.subject)
         await self._uow.users.update_profile(
             user.id, identity.email, user.display_name, user.avatar_url or identity.picture

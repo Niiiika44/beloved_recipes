@@ -470,8 +470,23 @@ async def test_missing_name_and_picture_are_tolerated(
     identity = await provider.exchange_code("4/code", "verifier")
 
     assert isinstance(identity, OidcIdentityDTO)
-    assert identity.name == "anna@example.org"
+    assert identity.name == ""
     assert identity.picture is None
+
+
+@pytest.mark.parametrize(
+    "name", [42, ["Anna"], {"given": "Anna"}], ids=["number", "list", "object"]
+)
+async def test_name_that_is_not_a_string_is_dropped(
+    provider: GoogleOidcProvider, google: Google, name: object
+) -> None:
+    google.jwks = [_jwks_response("k1")]
+    google.token = _token_answer(_id_token(_claims(name=name)))
+
+    identity = await provider.exchange_code("4/code", "verifier")
+
+    assert isinstance(identity, OidcIdentityDTO)
+    assert identity.name == ""
 
 
 async def test_used_or_expired_code_is_a_rejection(

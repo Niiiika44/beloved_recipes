@@ -191,11 +191,12 @@ class GoogleOidcProvider:
         claims = await self._verify(id_token)
         if isinstance(claims, ProviderRejectionDTO):
             return claims
+        name = claims.get("name")
         return OidcIdentityDTO(
             subject=claims["sub"],
             email=claims["email"],
             email_verified=claims.get("email_verified") is True,
-            name=claims.get("name") or claims["email"],
+            name=name if isinstance(name, str) else "",
             picture=claims.get("picture"),
             nonce=claims["nonce"],
         )
