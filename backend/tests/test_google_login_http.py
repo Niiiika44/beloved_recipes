@@ -140,7 +140,9 @@ def _login_error(response: httpx.Response) -> str:
     assert response.status_code == 303
     location = urlsplit(response.headers["location"])
     assert location.path == "/login"
-    return parse_qs(location.query)["error"][0]
+    [error] = parse_qs(location.query)["error"]
+    assert "_" not in error
+    return error
 
 
 def _assert_binding_dropped(response: httpx.Response) -> None:
@@ -353,7 +355,22 @@ async def test_unverified_google_email_is_refused(
 ) -> None:
     response = await _callback(client, google, await _start(client), email_verified=False)
 
-    assert _login_error(response) == "email_unverified"
+    assert _login_error(response) == "email-unverified"
+
+
+async def test_new_google_email_taken_by_another_account_is_a_conflict(
+    client: httpx.AsyncClient, google: FakeOidcProvider
+) -> None:
+    await _google_session(client, google)
+    async with get_session_factory()() as session:
+        session.add(User(email="boris@example.org", display_name="Boris", avatar_url=None))
+        await session.commit()
+
+    response = await _callback(client, google, await _start(client), email="Boris@example.org")
+
+    assert _login_error(response) == "email-conflict"
+    assert _session_cookie_name() not in _cookies(response)
+    assert await _stored_user() is not None
 
 
 async def test_google_outage_is_unavailable_and_logged_as_an_error(
@@ -440,7 +457,7 @@ async def test_twenty_first_login_start_from_one_ip_is_rate_limited(
 
         response = await client.get(LOGIN)
 
-        assert _login_error(response) == "rate_limited"
+        assert _login_error(response) == "rate-limited"
         assert BINDING not in _cookies(response)
         callback = await client.get(CALLBACK, params={"code": "4/c", "state": "S" * 43})
         assert _login_error(callback) == "state"
@@ -459,7 +476,7 @@ async def test_twenty_first_callback_from_one_ip_is_rate_limited(
 
         limited = await client.get(CALLBACK, params={"code": "4/c", "state": "S" * 43})
 
-        assert _login_error(limited) == "rate_limited"
+        assert _login_error(limited) == "rate-limited"
         assert (await client.get(LOGIN)).status_code == 302
 
     async with _client_from(app, ip="198.51.100.4") as other:
@@ -579,6 +596,12 @@ def test_openapi_documents_the_google_endpoints(app: FastAPI) -> None:
     assert "303" in paths[CALLBACK]["get"]["responses"]
     assert {"204", "422", "503"} <= set(paths[NOT_ME]["post"]["responses"])
     assert [p["name"] for p in paths[LOGIN]["get"]["parameters"]] == ["next"]
+    login_errors = paths[LOGIN]["get"]["responses"]["303"]["description"]
+    callback_errors = paths[CALLBACK]["get"]["responses"]["303"]["description"]
+    assert "rate-limited" in login_errors
+    for code in ("email-unverified", "email-conflict", "rate-limited", "cancelled"):
+        assert code in callback_errors
+    assert "_" not in login_errors + callback_errors
     for path, method in ((LOGIN, "get"), (CALLBACK, "get"), (NOT_ME, "post")):
         assert paths[path][method]["summary"]
 

@@ -51,9 +51,8 @@ router = APIRouter(tags=["auth"])
 
 
 def _to_login_page(error: str) -> RedirectResponse:
-    response = RedirectResponse(
-        f"{LOGIN_PAGE_PATH}?{urlencode({'error': error})}", status_code=status.HTTP_303_SEE_OTHER
-    )
+    query = urlencode({"error": error.replace("_", "-")})
+    response = RedirectResponse(f"{LOGIN_PAGE_PATH}?{query}", status_code=status.HTTP_303_SEE_OTHER)
     response.headers["Cache-Control"] = "no-store"
     return response
 
@@ -77,7 +76,7 @@ def _drop_binding(response: Response, settings: Settings) -> None:
     summary="Start signing in with Google",
     responses={
         302: {"description": "Redirect to Google; sets the short-lived browser binding cookie"},
-        303: {"description": "Redirect to the login page with ?error=rate_limited|unavailable"},
+        303: {"description": "Redirect to the login page with ?error=rate-limited|unavailable"},
     },
 )
 async def google_login(
@@ -120,8 +119,8 @@ async def google_login(
         303: {
             "description": (
                 "Redirect to the saved next path with the session cookie, or to the login "
-                "page with ?error=state|provider|nonce|email_unverified|email_conflict|"
-                "rate_limited|unavailable|cancelled"
+                "page with ?error=state|provider|nonce|email-unverified|email-conflict|"
+                "rate-limited|unavailable|cancelled"
             )
         },
     },

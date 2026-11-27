@@ -1,10 +1,6 @@
 # ---------- build stage ----------
 FROM python:3.14-slim AS builder
 
-RUN apt-get update \
-    && apt-get upgrade -y --no-install-recommends \
-    && rm -rf /var/lib/apt/lists/*
-
 COPY --from=ghcr.io/astral-sh/uv:0.12.18@sha256:3adc3706091ce7c2fe595e669628caedd6d951551b92b258b7e7dbe06d9440bc /uv /uvx /bin/
 
 WORKDIR /project
@@ -16,6 +12,10 @@ RUN uv sync --frozen --no-dev
 
 # ---------- runtime stage ----------
 FROM python:3.14-slim AS runtime
+
+RUN apt-get update \
+    && apt-get upgrade -y --no-install-recommends \
+    && rm -rf /var/lib/apt/lists/*
 
 # Disable pip, uv utilized
 RUN python -m pip uninstall --yes --root-user-action=ignore pip
